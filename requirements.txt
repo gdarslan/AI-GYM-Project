@@ -1,0 +1,18 @@
+# Python 3.11. Install with: pip install -r requirements.txt
+
+# --- Data & modelling ---
+numpy==2.4.5
+pandas==3.0.3
+scikit-learn==1.9.0
+matplotlib==3.11.1
+joblib==1.6.0
+
+# --- Backend (serves the trained model) ---
+fastapi==0.115.11
+uvicorn==0.34.3
+pydantic==2.10.6
+
+# --- Notebooks & tests ---
+notebook==7.6.2
+ipykernel==7.3.0
+pytest>=8.0

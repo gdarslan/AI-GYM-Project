@@ -1,0 +1,28 @@
+# --- Data ---
+# Raw downloads stay local: licences are not yet confirmed (see data/README.md).
+# To commit a dataset whose licence allows redistribution, add a negation rule, e.g.
+#   !data/raw/<dataset-folder>/
+data/raw/*
+!data/raw/.gitkeep
+
+# Processed data is regenerated from raw by code
+data/processed/*
+!data/processed/.gitkeep
+
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.vscode/
