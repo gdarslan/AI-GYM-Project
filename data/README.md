@@ -8,5 +8,7 @@ A dataset may only be committed once its licence is confirmed to allow redistrib
 | `Gym-Members-Exercise-Dataset/` | https://www.kaggle.com/datasets/valakhorasani/gym-members-exercise-dataset | not yet checked | no (until checked) |
 | `Gym-Exercise-Dataset/` | https://www.kaggle.com/datasets/niharika41298/gym-exercise-data | not yet checked | no (until checked) |
 | `fmendes-DAT263x-demos/` | https://github.com/fmendes/DAT263x-demos | not yet checked | no (until checked) |
+| `ExerciseDB/` | https://oss.exercisedb.dev/api/v1/exercises (downloaded 2026-10-23 with `python -m src.download_exercisedb`) | code AGPL-3.0; data terms not yet checked | no (until checked) |
 
-To reproduce: download each dataset from its source into the folder named above.
+To reproduce: download each dataset from its source into the folder named above (ExerciseDB: `python -m src.download_exercisedb`),
+then rebuild `data/processed/` with `python -m src.build_processed`.
