@@ -37,16 +37,16 @@ def convert_gym_members(gym: pd.DataFrame) -> pd.DataFrame:
     return out[TRAINING_COLUMNS]
 
 
-def clean_exercisedb(raw: pd.DataFrame) -> pd.DataFrame:
-    """ExerciseDB snapshot -> one row per distinct exercise.
+def clean_free_exercise_db(raw: pd.DataFrame) -> pd.DataFrame:
+    """free-exercise-db snapshot -> main muscle table for the heatmap.
 
-    Names are lowercased (the API mixes "Band Leg Extension" and "band leg extension"), and
-    rows that are identical apart from exercise_id are dropped, keeping the first by id.
+    The snapshot is already clean (unique ids and names, every exercise has a primary muscle),
+    so only the names are lowercased to match megaGym. Muscle lists stay "; "-separated and use
+    the same 17 muscle names as megaGym. Missing equipment, force and mechanic are left empty.
     """
-    df = raw.copy()
+    df = raw.drop(columns=["download_date", "source_commit"])
     df["name"] = df["name"].str.strip().str.lower()
-    content = ["name", "body_parts", "target_muscles", "secondary_muscles", "equipment"]
-    df = df.sort_values("exercise_id").drop_duplicates(subset=content, keep="first")
+    assert df["exercise_id"].is_unique and (df["primary_muscles"] != "").all()
     return df.sort_values(["name", "exercise_id"]).reset_index(drop=True)
 
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.data_prep import clean_exercisedb, clean_megagym, convert_gym_members, load_training_data
+from src.data_prep import clean_free_exercise_db, clean_megagym, convert_gym_members, load_training_data
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw"
@@ -20,8 +20,8 @@ def build(raw_dir: Path = RAW, out_dir: Path = PROCESSED) -> dict[str, pd.DataFr
         "calories_training.csv": load_training_data(raw_dir),
         "gym_members_training_format.csv": convert_gym_members(
             pd.read_csv(raw_dir / "Gym-Members-Exercise-Dataset" / "gym_members_exercise_tracking.csv")),
-        "exercisedb_exercises.csv": clean_exercisedb(
-            pd.read_csv(raw_dir / "ExerciseDB" / "exercisedb_exercises.csv", keep_default_na=False)),
+        "free_exercise_db.csv": clean_free_exercise_db(
+            pd.read_csv(raw_dir / "free-exercise-db" / "free_exercise_db.csv", keep_default_na=False)),
         "megagym_exercises.csv": clean_megagym(
             pd.read_csv(raw_dir / "Gym-Exercise-Dataset" / "megaGymDataset.csv")),
     }
