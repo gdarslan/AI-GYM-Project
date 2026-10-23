@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.data_prep import clean_exercisedb, convert_gym_members, load_training_data
+from src.data_prep import clean_exercisedb, clean_megagym, convert_gym_members, load_training_data
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw"
@@ -22,6 +22,8 @@ def build(raw_dir: Path = RAW, out_dir: Path = PROCESSED) -> dict[str, pd.DataFr
             pd.read_csv(raw_dir / "Gym-Members-Exercise-Dataset" / "gym_members_exercise_tracking.csv")),
         "exercisedb_exercises.csv": clean_exercisedb(
             pd.read_csv(raw_dir / "ExerciseDB" / "exercisedb_exercises.csv", keep_default_na=False)),
+        "megagym_exercises.csv": clean_megagym(
+            pd.read_csv(raw_dir / "Gym-Exercise-Dataset" / "megaGymDataset.csv")),
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     for name, table in tables.items():

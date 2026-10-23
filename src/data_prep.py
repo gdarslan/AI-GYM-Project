@@ -48,3 +48,19 @@ def clean_exercisedb(raw: pd.DataFrame) -> pd.DataFrame:
     content = ["name", "body_parts", "target_muscles", "secondary_muscles", "equipment"]
     df = df.sort_values("exercise_id").drop_duplicates(subset=content, keep="first")
     return df.sort_values(["name", "exercise_id"]).reset_index(drop=True)
+
+
+def clean_megagym(raw: pd.DataFrame) -> pd.DataFrame:
+    """megaGym -> backup muscle table: one primary muscle per exercise (no secondary muscles).
+
+    `BodyPart` actually holds the primary muscle (e.g. Quadriceps, Lats), so it is renamed.
+    The rating columns are dropped: 65% missing, many 0s, and "Average" is given even to 0 ratings.
+    Exact duplicate rows (9) are dropped. Missing equipment (32 rows) and descriptions are left empty.
+    """
+    df = raw.drop(columns=["Unnamed: 0", "Rating", "RatingDesc"]).rename(columns={
+        "Title": "name", "Desc": "description", "Type": "type", "BodyPart": "primary_muscle",
+        "Equipment": "equipment", "Level": "level"})
+    for col in ["name", "type", "primary_muscle", "equipment", "level"]:
+        df[col] = df[col].str.strip().str.lower()
+    df = df.drop_duplicates()
+    return df.sort_values(["name", "primary_muscle"]).reset_index(drop=True)
