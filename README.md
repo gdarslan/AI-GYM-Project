@@ -24,11 +24,15 @@ questions. A separate experiment tests whether a trained model predicts calories
 | `src/download_free_exercise_db.py` | Downloads a pinned snapshot of free-exercise-db into `data/raw/` |
 | `src/data_prep.py` | Cleaning and conversion functions for each dataset |
 | `src/build_processed.py` | Rebuilds every file in `data/processed/` from `data/raw/` |
-| `notebooks/calorie_model_starter.ipynb` | Data inspection, MET-formula baseline, Linear Regression and Random Forest |
+| `notebooks/calorie_model_starter.ipynb` | Data inspection, MET baseline (sourced and fitted), Linear Regression and Random Forest on three feature sets, Gym Members test, bias check; results in `notebooks/model_results.csv` |
 | `notebooks/coach_feasibility.ipynb` | Feasibility test of the AI coach with a local model (Ollama) |
 | `notebooks/Sprint-Docs-Notes/` | Sprint notes and data notes (Word documents) |
 | `tests/` | pytest tests for the data pipeline, progress calculations, API, login, privacy rules and admin rights |
 | `documents/` | Project reports (Word) |
+| `docs/formulas.md` | Every formula the app calculates, with its inputs and source (Compendium 2024, ACSM 2009, Epley, Ebben) |
+| `docs/model_card.md` | The calorie experiment: data, scores, Gym Members test, bias by gender and age, and why the app uses the MET formula |
+| `docs/database_schema.md` | All tables and columns, generated from the code |
+| `evaluation/` | Coach evaluation: 26 questions for 5 test users, a runner per prompt and model, scoring guide and summary (see its README) |
 | `start_app.bat` | Starts the API and the screens with one double-click (Windows) |
 
 ## Setup
@@ -79,7 +83,8 @@ and the API listens on localhost).
 The Coach page needs [Ollama](https://ollama.com) running with the model downloaded once:
 `ollama pull llama3.2:3b`. Conversations are saved per account with the model, prompt version, response time and the
 exact data the model was given, and users can rate each answer. Admins see only totals per model and prompt version
-(*Coach quality* on the Admin page). Conversations are deleted with the account.
+(*Coach quality* on the Admin page). Conversations are deleted with the account. When Ollama is not
+running, the coach answers with a plain summary of the calculated numbers, clearly labelled as not AI.
 
 ## Tests
 

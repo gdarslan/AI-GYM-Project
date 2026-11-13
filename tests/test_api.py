@@ -412,10 +412,18 @@ def test_exercise_descriptions_from_megagym(tmp_path):
     assert found["leg press"] is None
 
 
-def test_coach_unavailable_gives_clear_error(tmp_path):
+def test_coach_falls_back_to_the_numbers_without_a_model(tmp_path):
     with make_client(tmp_path, FakeLLM(fail=True)) as c:
-        r = c.post("/me/coach", headers=auth(c), json={"question": "Hi"})
-    assert r.status_code == 503 and "Ollama" in r.json()["detail"]
+        h = demo_headers(c)
+        r = c.post("/me/coach", headers=h, json={"question": "Which muscles am I neglecting?"})
+        weekly = c.post("/me/coach/weekly-summary", headers=h)
+        quality = c.get("/admin/coach-quality", headers=make_admin(c)).json()
+    assert r.status_code == 200 and weekly.status_code == 200
+    body = r.json()
+    assert body["model"] == "template (AI coach offline)" and body["prompt_version"] == "template"
+    assert "not available" in body["answer"] and "quadriceps (17 days)" in body["answer"]
+    assert "standing military press" in body["answer"]                 # stalled lift and next-session target
+    assert {q["model"] for q in quality} == {"template (AI coach offline)"}   # kept apart from real answers
 
 
 def test_empty_question_rejected(client):
@@ -552,8 +560,8 @@ def test_cardio_holds_and_bodyweight_are_logged_their_own_way(client):
     bike = w["sets"][0]
     assert (bike["kind"], bike["reps"], bike["duration_s"], bike["level"]) == ("cardio", 0, 1800, 8)
     assert w["total_volume_kg"] == round(15 * 0.65 * 78, 1)            # push-ups count part of body weight
-    # 30 min cycling at MET 10 + 30 min resistance at MET 5 (RPE 7), 78 kg
-    assert w["estimated_kcal"] == round(10 * 78 * 0.5 + 5 * 78 * 0.5)
+    # 30 min cycling at level 8 (MET 8.0, Compendium 01228) + 30 min resistance at RPE 7 (MET 5.0, 02061), 78 kg
+    assert w["estimated_kcal"] == round(8.0 * 78 * 0.5 + 5.0 * 78 * 0.5)
     p = client.get("/me/progress", headers=h).json()
     assert p["cardio_minutes"] == 30 and p["days_since_last_trained"]["quadriceps"] == 0
 

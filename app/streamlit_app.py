@@ -736,7 +736,11 @@ def coach_page():
                 st.markdown(m["content"])
                 if m["role"] == "assistant":
                     seconds = f" · {m['latency_ms'] / 1000:.1f} s" if m.get("latency_ms") is not None else ""
-                    st.caption(f"{m.get('model') or '?'} · prompt {m.get('prompt_version') or '?'}{seconds}")
+                    if (m.get("model") or "").startswith("template"):
+                        st.caption(":material/cloud_off: The AI coach was offline (is Ollama running?), so this is "
+                                   "the app's own summary of your numbers, not an AI answer.")
+                    else:
+                        st.caption(f"{m.get('model') or '?'} · prompt {m.get('prompt_version') or '?'}{seconds}")
                     answer_feedback(m)
                     if m.get("context"):
                         with st.expander("What the coach saw", icon=":material/visibility:"):

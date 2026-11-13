@@ -280,8 +280,8 @@ def add_routes(api: FastAPI) -> None:
             add_workout(s, user, WorkoutIn(
                 date=w["date"], start_time=w.get("start_time"), focus=w.get("focus"),
                 duration_min=w["duration_min"], rpe=w["rpe"],
-                sets=[{"exercise_id": ids[st["exercise"]], "reps": st["reps"], "weight_kg": st["weight_kg"]}
-                      for st in w["sets"]]))
+                sets=[{"exercise_id": ids[st["exercise"]], "reps": st["reps"], "weight_kg": st["weight_kg"],
+                       "duration_s": st.get("duration_s"), "level": st.get("level")} for st in w["sets"]]))
         return start_session(s, user)
 
     @api.post("/auth/logout", status_code=204)
@@ -401,20 +401,22 @@ def add_routes(api: FastAPI) -> None:
                                       consistency=summary.get("consistency"))
         llm = request.app.state.llm
         started = clock.perf_counter()
+        model, version = llm.model, coach.PROMPT_VERSION
         try:
             answer = coach.ask(question, context, llm, history, log_file=request.app.state.coach_log)
-        except coach.CoachUnavailable as e:
-            raise HTTPException(503, str(e))
+        except coach.CoachUnavailable:
+            # no language model: answer with the calculated numbers instead of an error, clearly labelled
+            answer, model, version = coach.fallback_answer(context), coach.FALLBACK_MODEL, "template"
         latency = round((clock.perf_counter() - started) * 1000)
         if conv is None:
             conv = CoachConversation(user=user, started_at=now(), title=(title or question)[:120])
             s.add(conv)
         conv.messages.append(CoachMessage(time=now(), role="user", content=question))
-        reply = CoachMessage(time=now(), role="assistant", content=answer, model=llm.model,
-                             prompt_version=coach.PROMPT_VERSION, latency_ms=latency, context=json.dumps(context))
+        reply = CoachMessage(time=now(), role="assistant", content=answer, model=model, prompt_version=version,
+                             latency_ms=latency, context=json.dumps(context))
         conv.messages.append(reply)
         s.commit()
-        return CoachOut(answer=answer, model=llm.model, prompt_version=coach.PROMPT_VERSION, context=context,
+        return CoachOut(answer=answer, model=model, prompt_version=version, context=context,
                         conversation_id=conv.id, message_id=reply.id, latency_ms=latency)
 
     @api.post("/me/coach", response_model=CoachOut)

@@ -200,3 +200,8 @@ def test_targets_for_cardio_and_holds():
     long_ride = kind_log([("2026-11-06", "bicycling, stationary", 0, 0, 2700, 6)])
     t = next_session_targets(long_ride, KIND_EXERCISES, "build muscle", TODAY)[0]
     assert (t["minutes"], t["level"]) == (45, 7)                           # 45 minutes: one level harder
+
+
+def test_cardio_met_bands_follow_the_compendium():
+    from src.calories import met_for_level
+    assert [met_for_level(lv) for lv in (1, 3, 4, 6, 7, 8, 9, 10, None)] == [4.0, 4.0, 6.0, 6.0, 8.0, 8.0, 10.8, 10.8, 6.0]

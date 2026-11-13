@@ -1,0 +1,19 @@
+data,subset,model,MSE,RMSE,MAE,R2
+test set (Exercise + Calories),all,MET 5.0 (Compendium 02061),810.909,28.476,21.83,0.799
+test set (Exercise + Calories),all,MET 4.70 (fitted on training data),774.46,27.829,20.893,0.808
+test set (Exercise + Calories),all,Linear Regression (full),131.996,11.489,8.442,0.967
+test set (Exercise + Calories),all,Random Forest (full),7.036,2.653,1.691,0.998
+test set (Exercise + Calories),all,Linear Regression (no body temp),165.559,12.867,9.687,0.959
+test set (Exercise + Calories),all,Random Forest (no body temp),6.434,2.537,1.601,0.998
+test set (Exercise + Calories),all,Linear Regression (app-only),265.748,16.302,12.301,0.934
+test set (Exercise + Calories),all,Random Forest (app-only),161.326,12.701,8.874,0.96
+Gym Members,all,MET 5.0 (Compendium 02061),231247.4,480.9,442.0,-2.1
+Gym Members,all,Linear Regression (no body temp),197658.2,444.6,410.9,-1.7
+Gym Members,all,Random Forest (no body temp),507661.0,712.5,658.9,-5.8
+Gym Members,all,Linear Regression (app-only),175939.5,419.5,390.5,-1.4
+Gym Members,all,Random Forest (app-only),566152.0,752.4,700.8,-6.6
+Gym Members,Strength,MET 5.0 (Compendium 02061),243058.6,493.0,456.0,-2.3
+Gym Members,Strength,Linear Regression (no body temp),201343.3,448.7,414.2,-1.8
+Gym Members,Strength,Random Forest (no body temp),514176.1,717.1,664.9,-6.1
+Gym Members,Strength,Linear Regression (app-only),180786.5,425.2,394.4,-1.5
+Gym Members,Strength,Random Forest (app-only),572022.7,756.3,706.0,-6.9

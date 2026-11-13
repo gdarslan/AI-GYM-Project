@@ -108,3 +108,37 @@ def ask(question: str, context: dict, client: LLMClient, history: list[dict] | N
                                 "model": client.model, "prompt_version": version, "question": question,
                                 "answer": answer, "context": context}) + "\n")
     return answer
+
+
+# ---------------- fallback without a language model ----------------
+FALLBACK_MODEL = "template (AI coach offline)"
+
+
+def fallback_answer(context: dict) -> str:
+    """A plain summary of the calculated numbers, used when the language model cannot be reached.
+
+    It does not try to answer the question itself: it says the coach is offline and lists the facts.
+    """
+    kf = context.get("key_findings") or {}
+    lines = ["The AI coach is not available right now, so here is what the app calculated for you:"]
+    if not context.get("progress", {}).get("workouts"):
+        lines.append("- No workouts in the last weeks yet. Log a workout to see your progress.")
+    elif not kf.get("enough_data", True):
+        lines.append("- You have logged only a few workouts, so these numbers are not reliable yet.")
+    neglected = kf.get("neglected_muscles") or {}
+    if neglected:
+        lines.append("- Not trained for 10 days or more: " + ", ".join(
+            f"{m} ({d} days)" if d is not None else f"{m} (not in this period)" for m, d in neglected.items()) + ".")
+    for key, label in [("stalled_lifts", "Stalled"), ("improving_lifts", "Improving"),
+                       ("muscles_recovering", "Still recovering (trained less than 48 hours ago)")]:
+        if kf.get(key):
+            lines.append(f"- {label}: {', '.join(kf[key])}.")
+    targets = context.get("next_session") or []
+    if targets:
+        lines.append("- Next session: " + "; ".join(f"{t['exercise']} {t['target']}" for t in targets[:5]) + ".")
+    c = context.get("consistency") or {}
+    if c:
+        lines.append(f"- This week: {c.get('this_week', 0)} of {c.get('weekly_target', 3)} training days; "
+                     f"week streak: {c.get('week_streak', 0)}.")
+    lines.append("Ask again later for an answer to your question.")
+    return "\n".join(lines)
