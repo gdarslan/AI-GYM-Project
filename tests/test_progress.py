@@ -5,8 +5,8 @@ import pytest
 
 from src.personas import legs_neglected
 from src.calories import estimate_kcal, met_for_rpe
-from src.progress import (estimated_1rm, exercise_history, neglected_muscles, new_records, progress_summary,
-                          recovery_status)
+from src.progress import (consistency, estimated_1rm, exercise_history, neglected_muscles, new_records,
+                          next_session_targets, progress_summary, recovery_status)
 
 TODAY = date(2026, 11, 9)
 
@@ -117,3 +117,42 @@ def test_calorie_estimate():
     assert [met_for_rpe(r) for r in (None, 1, 4, 5, 7, 8, 10)] == [5.0, 3.5, 3.5, 5.0, 5.0, 6.0, 6.0]
     assert estimate_kcal(80, 90, 8) == 720                         # 6.0 x 80 kg x 1.5 h
     assert estimate_kcal(80, None, 8) is None
+
+
+def test_neglect_needs_ten_days_of_history():
+    log = pd.DataFrame([{"date": "2026-11-05", "exercise": "barbell bench press - medium grip", "reps": 8,
+                         "weight_kg": 60}])
+    out = progress_summary(log, EXERCISES, TODAY)
+    assert out["days_of_history"] == 4 and out["enough_data"] is False
+    assert neglected_muscles(out) == []          # started 4 days ago: legs are not "neglected" yet
+
+
+def targets_for(rows, goal="build muscle"):
+    log = pd.DataFrame(rows, columns=["date", "exercise", "reps", "weight_kg"])
+    return {t["exercise"]: t for t in next_session_targets(log, EXERCISES, goal, TODAY)}
+
+
+def test_double_progression():
+    bench, squat = "barbell bench press - medium grip", "barbell squat"
+    t = targets_for([("2026-11-06", bench, 12, 60), ("2026-11-06", bench, 12, 60),
+                     ("2026-11-06", squat, 7, 100)])
+    assert (t[bench]["weight_kg"], t[bench]["reps"]) == (62.5, 8)     # top of 8-12: upper body +2.5 kg
+    assert (t[squat]["weight_kg"], t[squat]["reps"]) == (100, 8)      # below the range: same weight, reach 8
+    strength = targets_for([("2026-11-06", squat, 6, 100)], goal="get stronger")
+    assert (strength[squat]["weight_kg"], strength[squat]["reps"]) == (105, 4)    # lower body: +5 kg
+    bodyweight = targets_for([("2026-11-06", "pushups", 15, 0)])
+    assert (bodyweight["pushups"]["weight_kg"], bodyweight["pushups"]["reps"]) == (0, 16)
+
+
+def test_stalled_lift_gets_a_lighter_week():
+    t = {x["exercise"]: x for x in next_session_targets(persona_log(legs_neglected(TODAY)), EXERCISES,
+                                                        "build muscle", TODAY)}
+    assert (t["standing military press"]["weight_kg"], t["standing military press"]["reps"]) == (40.0, 12)
+    assert "barbell squat" not in t                                  # not done recently
+
+
+def test_week_streak():
+    dates = [w["date"] for w in legs_neglected(TODAY)["workouts"]]     # Mon, Wed, Fri for four weeks
+    assert consistency(dates, 3, TODAY) == {"weekly_target": 3, "this_week": 0, "week_streak": 4}
+    assert consistency(dates, 4, TODAY)["week_streak"] == 0
+    assert consistency(dates + [TODAY], 1, TODAY) == {"weekly_target": 1, "this_week": 1, "week_streak": 5}

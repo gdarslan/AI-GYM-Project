@@ -20,6 +20,7 @@ class ProfileIn(BaseModel):
     weight_kg: float = Field(ge=30, le=300)
     goal: Goal
     experience: Experience
+    weekly_target: int = Field(default=3, ge=1, le=7)
 
 
 class RegisterIn(ProfileIn):
@@ -63,6 +64,7 @@ class MeOut(BaseModel):
     weight_kg: float | None
     goal: Goal | None
     experience: Experience | None
+    weekly_target: int | None = None
 
 
 class TokenOut(BaseModel):

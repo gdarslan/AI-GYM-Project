@@ -15,9 +15,13 @@ from src.progress import neglected_muscles
 
 ROOT = Path(__file__).resolve().parents[1]
 PROMPTS = ROOT / "prompts"
-PROMPT_VERSION = os.environ.get("GYM_COACH_PROMPT", "v2")
+PROMPT_VERSION = os.environ.get("GYM_COACH_PROMPT", "v3")
 # v1: progress numbers only. v2: the code also lists the key findings, so the model does not have to work them
 # out itself (v1 called an improving lift "stalled" and ignored legs that were not trained for 17 days).
+# v3: v2 + next-session targets and consistency, a rule for users with little data, and no internal field names
+# in answers (v2 sometimes said "according to the key_findings").
+WEEKLY_SUMMARY_QUESTION = ("Write my weekly summary: one sentence on what went well, one on what I skipped or should "
+                           "watch, and one clear focus for next week. Use the numbers. At most 80 words.")
 LOG_FILE = ROOT / "logs" / "coach_log.jsonl"
 MAX_HISTORY_TURNS = 6          # earlier messages sent along, so follow-up questions make sense
 
@@ -68,14 +72,22 @@ def key_findings(summary: dict) -> dict:
         "stalled_lifts": lifts("stalled"),
         "lifts_not_done_recently": lifts("not done recently"),
         "muscles_recovering": [m for m, s in summary.get("recovery_guideline", {}).items() if s == "recovering"],
+        "enough_data": summary.get("enough_data", False),
     }
 
 
-def build_context(goal: str, experience: str, summary: dict, version: str = PROMPT_VERSION) -> dict:
+def build_context(goal: str, experience: str, summary: dict, version: str = PROMPT_VERSION,
+                  next_session: list | None = None, consistency: dict | None = None) -> dict:
     """Everything the model gets to see about the user."""
     context = {"goal": goal, "experience": experience}
     if version != "v1" and summary.get("workouts"):
         context["key_findings"] = key_findings(summary)
+    if version not in ("v1", "v2"):
+        # "target_kg", not "weight_kg": that name is reserved for body weight, which is never sent
+        context["next_session"] = [{"exercise": t["exercise"], "sets": t["sets"], "reps": t["reps"],
+                                    "target_kg": t["weight_kg"], "reason": t["reason"]}
+                                   for t in (next_session or [])[:8]]
+        context["consistency"] = consistency or {}
     return context | {"progress": summary}
 
 

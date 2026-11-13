@@ -306,7 +306,8 @@ def test_coach_gets_progress_but_no_personal_details(client, llm):
     username = client.get("/me", headers=h).json()["username"]
     r = client.post("/me/coach", headers=h, json={"question": "Which muscles am I neglecting?"})
     assert r.status_code == 200 and r.json()["answer"] == "Train your legs."
-    assert set(r.json()["context"]) == {"goal", "experience", "key_findings", "progress"}
+    assert set(r.json()["context"]) == {"goal", "experience", "key_findings", "next_session", "consistency",
+                                        "progress"}
 
     system = llm.calls[0][0]["content"]
     assert '"quadriceps": 17' in system                        # the computed numbers are there
@@ -347,7 +348,7 @@ def test_coach_conversation_is_saved_and_continued(client, llm):
     assert len(convs) == 1 and convs[0]["messages"] == 4 and convs[0]["title"] == "Am I improving?"
     msgs = client.get(f"/me/conversations/{first['conversation_id']}", headers=h).json()
     answer = msgs[1]
-    assert answer["role"] == "assistant" and answer["model"] == "fake-model" and answer["prompt_version"] == "v2"
+    assert answer["role"] == "assistant" and answer["model"] == "fake-model" and answer["prompt_version"] == "v3"
     assert answer["context"]["key_findings"]["neglected_muscles"]["quadriceps"] == 17
 
 
@@ -361,7 +362,7 @@ def test_coach_feedback_and_quality_summary(client):
     assert client.put(f"/me/coach/messages/{mid}/feedback", headers=h, json={"rating": 5}).status_code == 422
     admin = make_admin(client)
     quality = client.get("/admin/coach-quality", headers=admin).json()
-    assert quality == [{"model": "fake-model", "prompt_version": "v2", "answers": 1, "rated": 1, "helpful": 1,
+    assert quality == [{"model": "fake-model", "prompt_version": "v3", "answers": 1, "rated": 1, "helpful": 1,
                         "not_helpful": 0, "avg_latency_ms": quality[0]["avg_latency_ms"], "reasons": {}}]
     assert "military press" not in str(quality)                       # totals only, never the content
 
@@ -484,3 +485,44 @@ def test_older_database_gets_new_columns_without_losing_data(tmp_path):
     con = sqlite3.connect(db)
     assert con.execute("SELECT date, start_time, focus FROM workouts").fetchall() == [("2026-11-01", None, None)]
     con.close()
+
+
+def test_next_session_targets_and_coach_context(client):
+    h = demo_headers(client)
+    targets = {t["exercise"]: t for t in client.get("/me/next-session", headers=h).json()}
+    assert "barbell squat" not in targets                          # not done for 17 days
+    assert targets["standing military press"]["weight_kg"] == 40.0   # stalled at 45 kg: about 90%
+    bench = targets["barbell bench press - medium grip"]
+    assert (bench["weight_kg"], bench["reps"]) == (77.5, 9)            # 8 reps in an 8-12 range: one more rep
+    context = client.post("/me/coach", headers=h, json={"question": "What next?"}).json()["context"]
+    assert any(t["exercise"] == "standing military press" for t in context["next_session"])
+    assert context["consistency"]["weekly_target"] == 3
+
+
+def test_weekly_target_and_consistency(client):
+    h = auth(client)
+    assert client.get("/me", headers=h).json()["weekly_target"] == 3
+    client.put("/me", headers=h, json=PROFILE | {"weekly_target": 1})
+    client.post("/me/workouts", headers=h, json=workout())
+    c = client.get("/me/progress", headers=h).json()["consistency"]
+    assert c == {"weekly_target": 1, "this_week": 1, "week_streak": 1}
+    assert client.put("/me", headers=h, json=PROFILE | {"weekly_target": 8}).status_code == 422
+
+
+def test_new_user_has_too_little_data(client):
+    h = auth(client)
+    client.post("/me/workouts", headers=h, json=workout())
+    p = client.get("/me/progress", headers=h).json()
+    assert p["enough_data"] is False
+    context = client.post("/me/coach", headers=h, json={"question": "What am I neglecting?"}).json()["context"]
+    assert context["key_findings"]["enough_data"] is False
+    assert context["key_findings"]["neglected_muscles"] == {}         # one day of history: nothing is "neglected"
+
+
+def test_weekly_summary_is_saved_as_a_conversation(client, llm):
+    h = demo_headers(client)
+    r = client.post("/me/coach/weekly-summary", headers=h)
+    assert r.status_code == 200
+    assert "weekly summary" in llm.calls[0][-1]["content"].lower()
+    conv = client.get("/me/conversations", headers=h).json()[0]
+    assert conv["title"].startswith("Weekly summary") and conv["id"] == r.json()["conversation_id"]

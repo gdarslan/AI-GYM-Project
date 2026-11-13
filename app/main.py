@@ -28,7 +28,7 @@ from app.schemas import (CONSENT_VERSION, AccountOut, AuditOut, CoachIn, CoachOu
 from src import coach
 from src.calories import estimate_kcal
 from src.personas import legs_neglected
-from src.progress import exercise_history, new_records, progress_summary
+from src.progress import consistency, exercise_history, new_records, next_session_targets, progress_summary
 
 LOG_COLUMNS = ["date", "exercise", "reps", "weight_kg"]
 SESSION_HOURS = 8
@@ -161,13 +161,23 @@ def set_rows(workouts) -> pd.DataFrame:
                          for w in workouts for st in w.sets], columns=LOG_COLUMNS)
 
 
+def user_exercises(s: Session, log: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame([(e.name, e.primary_muscles, e.secondary_muscles)
+                         for e in s.scalars(select(Exercise).where(Exercise.name.in_(set(log["exercise"]))))],
+                        columns=["name", "primary_muscles", "secondary_muscles"])
+
+
 def user_progress(s: Session, user: User, today: date | None = None, weeks: int = 4) -> dict:
+    today = today or date.today()
     log = set_rows(user.workouts)
-    exercises = pd.DataFrame(
-        [(e.name, e.primary_muscles, e.secondary_muscles)
-         for e in s.scalars(select(Exercise).where(Exercise.name.in_(set(log["exercise"]))))],
-        columns=["name", "primary_muscles", "secondary_muscles"])
-    return progress_summary(log, exercises, today or date.today(), weeks)
+    summary = progress_summary(log, user_exercises(s, log), today, weeks)
+    summary["consistency"] = consistency(log["date"], user.weekly_target or 3, today)
+    return summary
+
+
+def user_targets(s: Session, user: User, today: date | None = None) -> list:
+    log = set_rows(user.workouts)
+    return next_session_targets(log, user_exercises(s, log), user.goal or "general fitness", today)
 
 
 def add_workout(s: Session, user: User, data: WorkoutIn) -> Workout:
@@ -343,6 +353,12 @@ def add_routes(api: FastAPI) -> None:
                  s: Session = Depends(get_session)):
         return user_progress(s, user, today, weeks)
 
+    @api.get("/me/next-session")
+    def next_session(today: date | None = None, user: User = Depends(current_user),
+                     s: Session = Depends(get_session)):
+        """What to aim for next time on each recent exercise (double progression), with the reason."""
+        return user_targets(s, user, today)
+
     @api.get("/me/exercise-history/{exercise_id}")
     def history_of_exercise(exercise_id: str, user: User = Depends(current_user), s: Session = Depends(get_session)):
         """Every session of one exercise, oldest first: sets, best estimated 1RM and volume."""
@@ -352,34 +368,46 @@ def add_routes(api: FastAPI) -> None:
         return exercise_history(set_rows(user.workouts), exercise.name)
 
     # ---- AI coach ----
-    @api.post("/me/coach", response_model=CoachOut)
-    def ask_coach(data: CoachIn, request: Request, user: User = Depends(current_user),
-                  s: Session = Depends(get_session)):
-        """The code calculates the progress; the language model explains it. No personal details are sent."""
+    def run_coach(request: Request, s: Session, user: User, question: str, conv: CoachConversation | None,
+                  history: list, title: str | None = None) -> CoachOut:
         require_profile(user)
         if not user.consent_ai_coach:
             raise HTTPException(403, "You have not agreed to use the AI coach. You can switch it on under Privacy.")
-        conv = own_conversation(s, user, data.conversation_id) if data.conversation_id else None
-        history = ([{"role": m.role, "content": m.content} for m in conv.messages] if conv
-                   else [t.model_dump() for t in data.history])
-        context = coach.build_context(user.goal, user.experience, user_progress(s, user))
+        summary = user_progress(s, user)
+        context = coach.build_context(user.goal, user.experience, summary, next_session=user_targets(s, user),
+                                      consistency=summary.get("consistency"))
         llm = request.app.state.llm
         started = clock.perf_counter()
         try:
-            answer = coach.ask(data.question, context, llm, history, log_file=request.app.state.coach_log)
+            answer = coach.ask(question, context, llm, history, log_file=request.app.state.coach_log)
         except coach.CoachUnavailable as e:
             raise HTTPException(503, str(e))
         latency = round((clock.perf_counter() - started) * 1000)
         if conv is None:
-            conv = CoachConversation(user=user, started_at=now(), title=data.question[:120])
+            conv = CoachConversation(user=user, started_at=now(), title=(title or question)[:120])
             s.add(conv)
-        conv.messages.append(CoachMessage(time=now(), role="user", content=data.question))
+        conv.messages.append(CoachMessage(time=now(), role="user", content=question))
         reply = CoachMessage(time=now(), role="assistant", content=answer, model=llm.model,
                              prompt_version=coach.PROMPT_VERSION, latency_ms=latency, context=json.dumps(context))
         conv.messages.append(reply)
         s.commit()
         return CoachOut(answer=answer, model=llm.model, prompt_version=coach.PROMPT_VERSION, context=context,
                         conversation_id=conv.id, message_id=reply.id, latency_ms=latency)
+
+    @api.post("/me/coach", response_model=CoachOut)
+    def ask_coach(data: CoachIn, request: Request, user: User = Depends(current_user),
+                  s: Session = Depends(get_session)):
+        """The code calculates the progress; the language model explains it. No personal details are sent."""
+        conv = own_conversation(s, user, data.conversation_id) if data.conversation_id else None
+        history = ([{"role": m.role, "content": m.content} for m in conv.messages] if conv
+                   else [t.model_dump() for t in data.history])
+        return run_coach(request, s, user, data.question, conv, history)
+
+    @api.post("/me/coach/weekly-summary", response_model=CoachOut)
+    def weekly_summary(request: Request, user: User = Depends(current_user), s: Session = Depends(get_session)):
+        """A short AI summary of the week, saved as its own conversation so it can be read again and rated."""
+        return run_coach(request, s, user, coach.WEEKLY_SUMMARY_QUESTION, None, [],
+                         title=f"Weekly summary · {date.today():%d %b %Y}")
 
     @api.get("/me/conversations", response_model=list[ConversationOut])
     def list_conversations(user: User = Depends(current_user)):

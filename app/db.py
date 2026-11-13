@@ -48,6 +48,7 @@ class User(Base):
     weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
     goal: Mapped[str | None] = mapped_column(String(30), nullable=True)
     experience: Mapped[str | None] = mapped_column(String(15), nullable=True)
+    weekly_target: Mapped[int | None] = mapped_column(Integer, nullable=True, default=3)   # training days a week
 
     workouts: Mapped[list["Workout"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     sessions: Mapped[list["AuthSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
@@ -184,7 +185,7 @@ def backup_outdated_db(engine) -> Path | None:
 # Columns added after the first release: (table, column, SQL type). New columns are always optional, so existing
 # rows stay valid and no data has to be moved.
 ADDED_COLUMNS = [("workouts", "start_time", "TIME"), ("workouts", "focus", "VARCHAR(80)"),
-                 ("exercises", "description", "TEXT")]
+                 ("exercises", "description", "TEXT"), ("users", "weekly_target", "INTEGER")]
 
 
 def add_missing_columns(engine) -> list[str]:

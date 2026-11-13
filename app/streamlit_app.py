@@ -163,6 +163,7 @@ def login_screen():
                 weight = b.number_input("Weight (kg)", 30.0, 300.0, 75.0, step=0.5)
                 goal = a.selectbox("Goal", GOALS)
                 level = b.selectbox("Experience", LEVELS)
+                target = st.slider("Training days per week (your target)", 1, 7, 3)
                 st.markdown("**Consent**")
                 health = st.checkbox("I agree that the app stores and processes my training profile and workouts "
                                      "to show my progress (required).")
@@ -177,7 +178,7 @@ def login_screen():
                         result = api("POST", "/auth/register", json={
                             "username": username, "password": password, "consent_health_data": health,
                             "consent_ai_coach": coach, "age": age, "gender": gender, "height_cm": height,
-                            "weight_kg": weight, "goal": goal, "experience": level})
+                            "weight_kg": weight, "goal": goal, "experience": level, "weekly_target": target})
                         if result:
                             signed_in(result)
 
@@ -210,6 +211,35 @@ TREND_LABEL = {"improving": "↑ Improving", "stalled": "→ Stalled",
                "not done recently": "· Not done recently", "too little data": "· Too little data"}
 
 
+def latest_weekly_summary(convs: list) -> dict | None:
+    """The newest saved weekly summary: its date and the coach's text."""
+    conv = next((c for c in convs if c["title"].startswith("Weekly summary")), None)
+    if not conv:
+        return None
+    answers = [m for m in api("GET", f"/me/conversations/{conv['id']}") or [] if m["role"] == "assistant"]
+    return {"title": conv["title"], "text": answers[-1]["content"]} if answers else None
+
+
+def weekly_summary_panel(p: dict):
+    ui.section("Coach's weekly summary")
+    if not me["consent_ai_coach"]:
+        st.caption("Switch the AI coach on under Privacy & account to get a weekly summary.")
+        return
+    summary = latest_weekly_summary(api("GET", "/me/conversations") or [])
+    if summary:
+        st.markdown(f'<div class="gc-panel"><div class="gc-muted" style="margin-bottom:6px;">{summary["title"]}</div>'
+                    f'{summary["text"]}</div>', unsafe_allow_html=True)
+    else:
+        st.caption("No summary yet. The coach reads this page's numbers and writes three sentences about your week.")
+    label = "Write a new summary" if summary else "Write my weekly summary"
+    if st.button(label, icon=":material/auto_awesome:", disabled=not p.get("enough_data"),
+                 help=None if p.get("enough_data") else "Needs at least 3 workouts."):
+        with st.spinner("The coach is reading your week…"):
+            if api("POST", "/me/coach/weekly-summary", timeout=300):
+                st.rerun()
+    st.caption("Saved under Coach as a conversation, so you can rate it there.")
+
+
 def progress_page():
     ui.page_header("Your progress", f"Welcome back, {me['username']}. Goal: {me['goal']}.")
     weeks = st.segmented_control("Period", [4, 8, 12], default=4, format_func=lambda w: f"Last {w} weeks",
@@ -221,14 +251,23 @@ def progress_page():
     days = p["days_since_last_trained"]
     gaps = neglected_muscles(p)
     trends = p["strength_trends"]
-    improving = sum(t["trend"] == "improving" for t in trends.values())
+    c = p.get("consistency", {})
+    target = c.get("weekly_target", 3)
     ui.cards([("Workouts", p["workouts"], f"in the last {weeks} weeks", False),
-              ("Per week", p["workouts_per_week"], "average sessions", False),
-              ("Lifts improving", f"{improving}/{len(trends)}", "estimated 1-rep max", False),
+              ("This week", f"{c.get('this_week', 0)}/{target}", "training days vs your target",
+               c.get("this_week", 0) >= target),
+              ("Week streak", c.get("week_streak", 0), f"weeks in a row with {target}+ sessions",
+               c.get("week_streak", 0) > 0),
               ("Muscles to train", len(gaps), "not trained for 10+ days", bool(gaps))])
+    if not p.get("enough_data"):
+        st.info(f"You have logged {p['workouts']} workout{'s' if p['workouts'] != 1 else ''}. Trends, neglected "
+                "muscles and the coach's advice become reliable after 3 workouts over about 10 days.",
+                icon=":material/hourglass_top:")
     if gaps:
         ui.alert("<b>Not trained for 10+ days:</b> " + ", ".join(
             f"{m} ({days[m]} days)" if days[m] is not None else f"{m} (not in this period)" for m in gaps))
+
+    weekly_summary_panel(p)
 
     left, right = st.columns([5, 4], gap="large")
     with left:
@@ -248,12 +287,37 @@ def progress_page():
                     + "".join(f'<span class="gc-chip">{m}</span>' for m in ready), unsafe_allow_html=True)
         st.caption("Red: trained less than 48 hours ago, still recovering. Grey: ready. A general guideline, "
                    "not a prediction.")
-        ui.section("Volume per muscle group")
-        vol = pd.DataFrame([{"muscle": m, "share": v, "period": f"Last {weeks} weeks"}
-                            for m, v in p["volume_share_pct"].items()]
-                           + [{"muscle": m, "share": v, "period": "Last 2 weeks"}
-                              for m, v in p["volume_share_pct_last_2_weeks"].items()])
-        red_bars(vol[vol["share"] > 0], "share", "muscle", color="period", height=330)
+        ui.section("Training calendar")
+        workouts = api("GET", "/me/workouts") or []
+        trained = {}
+        for w in workouts:
+            d = date.fromisoformat(w["date"])
+            trained[d] = ", ".join(filter(None, [trained.get(d), w.get("focus") or "workout"]))
+        today = date.today()
+        prev = (today.replace(day=1) - pd.Timedelta(days=1))
+        cal_a, cal_b = st.columns(2)
+        cal_a.markdown(ui.month_calendar(prev.year, prev.month, trained, today), unsafe_allow_html=True)
+        cal_b.markdown(ui.month_calendar(today.year, today.month, trained, today), unsafe_allow_html=True)
+
+    ui.section("Next session")
+    targets = api("GET", "/me/next-session") or []
+    if targets:
+        st.dataframe(pd.DataFrame(targets)[["exercise", "last", "sets", "reps", "weight_kg", "reason"]],
+                     width="stretch", hide_index=True, column_config={
+                         "exercise": "Exercise", "last": "Last time", "sets": "Sets", "reps": "Target reps",
+                         "weight_kg": st.column_config.NumberColumn("Target (kg)", format="%.1f"),
+                         "reason": st.column_config.TextColumn("Why", width="large")})
+        st.caption(f"Double progression for your goal ({me['goal']}): add a rep each session; at the top of the rep "
+                   "range, add weight. These targets are filled in when you add the exercise on Log workout.")
+    else:
+        st.caption("No exercises done in the last 10 days.")
+
+    ui.section("Volume per muscle group")
+    vol = pd.DataFrame([{"muscle": m, "share": v, "period": f"Last {weeks} weeks"}
+                        for m, v in p["volume_share_pct"].items()]
+                       + [{"muscle": m, "share": v, "period": "Last 2 weeks"}
+                          for m, v in p["volume_share_pct_last_2_weeks"].items()])
+    red_bars(vol[vol["share"] > 0], "share", "muscle", color="period", height=330)
 
     ui.section("Strength per exercise")
     table = pd.DataFrame(trends).T
@@ -265,7 +329,6 @@ def progress_page():
             "change_pct": st.column_config.NumberColumn("Change", format="%.1f%%"),
             "last_done_days_ago": st.column_config.NumberColumn("Last done", format="%d days ago"),
             "trend": "Trend"})
-        workouts = api("GET", "/me/workouts") or []
         ids = {s["exercise"]: s["exercise_id"] for w in workouts for s in w["sets"]}
         exercise = st.selectbox("Progress over time", list(table.index))
         history = api("GET", f"/me/exercise-history/{ids[exercise]}") or []
@@ -310,9 +373,11 @@ def current_plan() -> pd.DataFrame:
     return pd.concat([df, added], ignore_index=True) if not added.empty else df.reset_index(drop=True)
 
 
-def add_to_plan(names: list[str], last_weight: dict):
-    rows = pd.DataFrame([{"exercise": n, "sets": 3, "reps": 8, "weight_kg": float(last_weight.get(n, 0.0))}
-                         for n in names])
+def add_to_plan(names: list[str], targets: dict):
+    """Add exercises to today's list, filled in with the next-session target when there is one."""
+    rows = pd.DataFrame([{"exercise": n, "sets": targets.get(n, {}).get("sets", 3),
+                          "reps": targets.get(n, {}).get("reps", 8),
+                          "weight_kg": float(targets.get(n, {}).get("weight_kg", 0.0))} for n in names])
     st.session_state.plan = pd.concat([current_plan(), rows], ignore_index=True)
     st.session_state.pop("plan_editor", None)      # the table is rebuilt from the new plan
     st.session_state.add_round = st.session_state.get("add_round", 0) + 1     # empties the pick lists
@@ -340,11 +405,13 @@ def log_workout_page():
 
     library = exercise_library()
     workouts = api("GET", "/me/workouts") or []
-    last_weight, times_done = {}, {}
-    for w in workouts:                                   # newest first: the first weight seen is the latest
+    targets = {t["exercise"]: t for t in api("GET", "/me/next-session") or []}
+    times_done = {}
+    for w in workouts:
         for s in w["sets"]:
-            last_weight.setdefault(s["exercise"], s["weight_kg"])
             times_done[s["exercise"]] = times_done.get(s["exercise"], 0) + 1
+            if s["exercise"] not in targets:             # newest first: an older exercise keeps its last weight
+                targets[s["exercise"]] = {"weight_kg": s["weight_kg"]}
 
     # ---- the session ----
     ui.section("Session")
@@ -380,7 +447,7 @@ def log_workout_page():
             if st.button("Add to workout", key="add_suggested", type="primary",
                          disabled=not picks or len(picks) > MAX_PICKS,
                          icon=":material/playlist_add:"):
-                add_to_plan(picks, last_weight)
+                add_to_plan(picks, targets)
     with search_tab:
         query = st.text_input("Search exercise or muscle", placeholder="e.g. bench, squat, biceps")
         words = query.lower().split()
@@ -395,7 +462,7 @@ def log_workout_page():
         if st.button("Add to workout", key="add_searched", type="primary",
                      disabled=not picks or len(picks) > MAX_PICKS,
                      icon=":material/playlist_add:"):
-            add_to_plan(picks, last_weight)
+            add_to_plan(picks, targets)
     with copy_tab:
         if not workouts:
             st.caption("No earlier workouts yet.")
@@ -605,9 +672,10 @@ def profile_page():
         weight = b.number_input("Weight (kg)", 30.0, 300.0, float(me["weight_kg"]), step=0.5)
         goal = a.selectbox("Goal", GOALS, GOALS.index(me["goal"]))
         level = b.selectbox("Experience", LEVELS, LEVELS.index(me["experience"]))
+        target = a.slider("Training days per week (your target)", 1, 7, int(me.get("weekly_target") or 3))
         if st.form_submit_button("Save", type="primary"):
             if api("PUT", "/me", json={"age": age, "gender": gender, "height_cm": height, "weight_kg": weight,
-                                       "goal": goal, "experience": level}):
+                                       "goal": goal, "experience": level, "weekly_target": target}):
                 st.success("Saved")
 
 

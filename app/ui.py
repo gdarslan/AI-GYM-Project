@@ -2,7 +2,9 @@
 
 All pictures are drawn here as SVG, so the app needs no image files and no image licences.
 """
+import calendar as _cal
 import html
+from datetime import date
 
 import streamlit as st
 
@@ -277,3 +279,26 @@ def exercise_card(name: str, primary: str, secondary: str, equipment: str, level
             + (f'<div class="gc-muted" style="margin-top:6px;font-size:.8rem;line-height:1.35;">'
                f'{html.escape(description[:220] + ("…" if len(description) > 220 else ""))}</div>' if description else "")
             + '</div></div>')
+
+
+# ---------------- training calendar ----------------
+def month_calendar(year: int, month: int, trained: dict, today: date) -> str:
+    """A month grid, Monday first. Training days are red; hovering shows that day's focus."""
+    head = "".join(f'<div style="color:{MUTED};font-size:.7rem;text-align:center;">{d}</div>'
+                   for d in ["M", "T", "W", "T", "F", "S", "S"])
+    cells = []
+    for week in _cal.Calendar(firstweekday=0).monthdatescalendar(year, month):
+        for d in week:
+            if d.month != month:
+                cells.append("<div></div>")
+                continue
+            style = (f"background:{RED};color:white;font-weight:600;" if d in trained
+                     else f"background:{PANEL_2};color:{MUTED};")
+            if d == today:
+                style += f"outline:2px solid {TEXT};outline-offset:-2px;"
+            title = html.escape(f"{d:%a %d %b}: {trained[d]}" if d in trained else f"{d:%a %d %b}")
+            cells.append(f'<div title="{title}" style="{style}border-radius:6px;text-align:center;'
+                         f'padding:6px 0;font-size:.8rem;">{d.day}</div>')
+    return (f'<div class="gc-panel"><div style="font-family:Oswald,Impact,sans-serif;text-transform:uppercase;'
+            f'letter-spacing:.06em;color:{TEXT};margin-bottom:8px;">{_cal.month_name[month]} {year}</div>'
+            f'<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;">{head}{"".join(cells)}</div></div>')
