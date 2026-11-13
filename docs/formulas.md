@@ -16,8 +16,10 @@ How an exercise is logged follows from free-exercise-db's own fields (`exercise_
 | timed | category = stretching, or the name contains plank, hold, wall sit or isometric | sets × seconds |
 | bodyweight | equipment = body only | sets × reps, optional extra kg |
 | weighted | everything else | sets × reps × kg |
+| activity | the app's own list of classes (`app/activities.csv`): yoga, Pilates, stretching routine, aerobics, step, Zumba | minutes; each class has its own MET |
 
-Design choice: the dataset has no "logged by time" field, so holds are found by name.
+Design choice: the dataset has no "logged by time" field, so holds are found by name. free-exercise-db has no
+whole classes such as yoga (only single poses), so those are added from the Compendium as their own kind.
 
 ## Training volume and the muscle map
 
@@ -81,8 +83,12 @@ Rep ranges per goal: get stronger 4–6, build muscle 8–12, lose fat 10–15, 
 
 ```
 kcal = MET × body weight (kg) × hours
-session kcal = Σ cardio parts at their own MET + remaining minutes × resistance-training MET
+session kcal = Σ cardio and classes at their own MET + remaining minutes × MET for the rest of the session
 ```
+
+The remaining minutes count as **resistance training** (MET by RPE) when the session has weights or bodyweight
+sets, and as **light stretching** (2.3, code 02101) when it has only holds, stretches or classes. A yoga or
+stretching session is not weight training: before this rule, 60 minutes of yoga was counted at MET 5.0.
 
 MET values are *sourced* from the **2024 Adult Compendium of Physical Activities** (Herrmann et al., 2024):
 
@@ -95,6 +101,11 @@ MET values are *sourced* from the **2024 Adult Compendium of Physical Activities
 | cardio, level 4–6 | 6.0 | 01220, bicycling, stationary, 90–100 watts, moderate to vigorous |
 | cardio, level 7–8 | 8.0 | 01228, bicycling, stationary, 126–150 watts |
 | cardio, level 9–10 | 10.8 | 01236, bicycling, stationary, 200–229 watts, vigorous |
+| rest of a session without weights | 2.3 | 02101, stretching, mild |
+| yoga, Hatha / Vinyasa / Hot / Power / sun salutation | 2.3 / 2.7 / 3.0 / 4.0 / 3.5 | 02150 / 02185 / 02155 / 02160 / 02180 |
+| Pilates, mat / general | 1.8 / 2.8 | 02103 / 02105 |
+| stretching routine | 2.3 | 02101 |
+| aerobics / step class / Zumba | 7.3 / 7.8 / 6.5 | 02000 / 02004 / 02310 |
 
 *Design choices:* the RPE and level bands, and stationary cycling as the reference for all cardio machines
 (rowing, treadmill and elliptical have similar values per effort level). The calorie experiment

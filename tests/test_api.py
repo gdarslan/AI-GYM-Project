@@ -244,7 +244,8 @@ def test_exercise_search_is_public(client):
     names = [e["name"] for e in client.get("/exercises", params={"search": "bench"}).json()]
     assert names == ["barbell bench press - medium grip"]
     by_muscle = [e["name"] for e in client.get("/exercises", params={"search": "quadriceps"}).json()]
-    assert set(by_muscle) == {"barbell squat", "leg press", "bicycling, stationary"}
+    assert set(by_muscle) == {"barbell squat", "leg press", "bicycling, stationary",
+                              "air bike, cardio (fan bike / assault bike)"}
 
 
 @pytest.mark.parametrize("path, params", [("/me/progress", {"weeks": 0}), ("/me/progress", {"weeks": -3}),
@@ -595,3 +596,13 @@ def test_session_without_weights_is_not_counted_as_weight_training(client):
     w = client.post("/me/workouts", headers=h, json=workout(duration_min=30, rpe=8, sets=[
         {"exercise_id": "Plank", "duration_s": 60}, {"exercise_id": "Plank", "duration_s": 60}])).json()
     assert w["estimated_kcal"] == round(2.3 * 78 * 0.5)                  # light stretching MET, whatever the RPE
+
+
+def test_air_bike_cardio_machine_is_logged_as_cardio(client):
+    bikes = {e["name"]: e for e in client.get("/exercises", params={"search": "air bike"}).json()}
+    machine = bikes["air bike, cardio (fan bike / assault bike)"]
+    assert machine["kind"] == "cardio" and machine["met"] is None       # MET comes from the level, like other bikes
+    h = auth(client)
+    w = client.post("/me/workouts", headers=h, json=workout(duration_min=20, rpe=8, sets=[
+        {"exercise_id": "Cardio_Air_Bike", "duration_s": 1200, "level": 9}])).json()
+    assert w["estimated_kcal"] == round(10.8 * 78 * 20 / 60)             # level 9: MET 10.8

@@ -233,15 +233,17 @@ def load_descriptions(s, descriptions_csv: Path | None = DESCRIPTIONS_CSV) -> in
 
 
 def load_activities(s, activities_csv: Path | None = ACTIVITIES_CSV) -> int:
-    """Add the classes (yoga, Pilates, aerobics...) that free-exercise-db does not have. Safe to run again."""
+    """Add what free-exercise-db does not have: classes (yoga, Pilates, aerobics...) with their own MET, and
+    cardio machines such as the air bike (free-exercise-db's "air bike" is an ab exercise). Safe to run again."""
     if not activities_csv or not Path(activities_csv).exists():
         return 0
     df = pd.read_csv(activities_csv, keep_default_na=False, dtype={"compendium_code": str})
     known = set(s.scalars(select(Exercise.id).where(Exercise.id.in_(list(df["exercise_id"])))))
     new = [Exercise(id=r.exercise_id, name=r.name, primary_muscles=r.primary_muscles,
                     secondary_muscles=r.secondary_muscles, equipment=r.equipment, level=r.level,
-                    category=r.category, met=float(r.met),
-                    description=f"{r.description} MET {r.met} (Compendium 2024, code {r.compendium_code}).")
+                    category=r.category, met=float(r.met) if r.met else None,
+                    description=(f"{r.description} MET {r.met} (Compendium 2024, code {r.compendium_code})."
+                                 if r.met else r.description))      # cardio machines: MET by level instead
            for r in df.itertuples() if r.exercise_id not in known]
     s.add_all(new)
     s.commit()

@@ -10,3 +10,4 @@ Activity_Stretching_Routine,"stretching routine",,,body only,beginner,activity,2
 Activity_Aerobics,"aerobics class",,,body only,beginner,activity,7.3,02000,"An aerobics class, general."
 Activity_Step_Class,"step class",,,other,beginner,activity,7.8,02004,"A bench step class, general."
 Activity_Zumba,"zumba class",,,body only,beginner,activity,6.5,02310,"A Zumba group class."
+Cardio_Air_Bike,"air bike, cardio (fan bike / assault bike)",quadriceps,calves; glutes; hamstrings; shoulders,machine,beginner,cardio,,,"A fan-resistance bike that works arms and legs together. Logged like other cardio machines: minutes at a level. (Not the same as the ab exercise called ""air bike"".)"
