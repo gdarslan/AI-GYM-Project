@@ -12,7 +12,10 @@ questions. A separate experiment tests whether a trained model predicts calories
 | `app/db.py` | SQLite database tables; loads the exercise library from free-exercise-db |
 | `app/schemas.py` | Input validation (impossible values are rejected) |
 | `app/streamlit_app.py` | The screens: profile, log workout, history, progress, coach |
-| `src/progress.py` | Progress calculations (plain code, no AI) |
+| `src/progress.py` | Progress calculations (plain code, no AI): volume, neglected muscles, recovery, strength |
+| `src/coach.py` | The AI coach: builds the context, calls the local model (Ollama), logs every answer |
+| `prompts/` | Coach prompts, one file per version |
+| `src/calories.py` | Calorie estimate with the MET formula |
 | `src/personas.py` | Made-up test users with known training patterns |
 | `data/` | Raw and processed datasets (not committed), see [data/README.md](data/README.md) |
 | `src/download_free_exercise_db.py` | Downloads a pinned snapshot of free-exercise-db into `data/raw/` |
@@ -57,6 +60,10 @@ python -m streamlit run app/streamlit_app.py     # 2. the screens, opens in the 
 
 Click **Demo user** in the sidebar for a made-up user with 4 weeks of training. The database is stored in
 `data/app.db` (not committed).
+
+The Coach page needs [Ollama](https://ollama.com) running with the model downloaded once:
+`ollama pull llama3.2:3b`. Every coach question and answer is logged to `logs/coach_log.jsonl` (not committed)
+for the evaluation.
 
 ## Tests
 

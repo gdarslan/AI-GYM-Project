@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from src.coach import CoachUnavailable
 
 EXERCISES = [
     ("Barbell_Bench_Press", "barbell bench press - medium grip", "chest", "shoulders; triceps"),
@@ -21,13 +22,36 @@ USER = {"age": 24, "gender": "male", "height_cm": 180, "weight_kg": 78,
         "goal": "build muscle", "experience": "intermediate"}
 
 
-@pytest.fixture
-def client(tmp_path):
+class FakeLLM:
+    """Stands in for Ollama: records what it was sent and gives a fixed answer."""
+    model = "fake-model"
+
+    def __init__(self, fail=False):
+        self.fail, self.calls = fail, []
+
+    def chat(self, messages):
+        if self.fail:
+            raise CoachUnavailable("Ollama is not reachable")
+        self.calls.append(messages)
+        return "Train your legs."
+
+
+def make_client(tmp_path, llm):
     csv = tmp_path / "exercises.csv"
     pd.DataFrame([(i, n, p, s, "barbell", "beginner", "strength") for i, n, p, s in EXERCISES],
                  columns=["exercise_id", "name", "primary_muscles", "secondary_muscles",
                           "equipment", "level", "category"]).to_csv(csv, index=False)
-    with TestClient(create_app("sqlite://", csv)) as c:
+    return TestClient(create_app("sqlite://", csv, llm=llm, coach_log=tmp_path / "coach_log.jsonl"))
+
+
+@pytest.fixture
+def llm():
+    return FakeLLM()
+
+
+@pytest.fixture
+def client(tmp_path, llm):
+    with make_client(tmp_path, llm) as c:
         yield c
 
 
@@ -114,3 +138,96 @@ def test_demo_user_progress(client):
 def test_progress_without_workouts(client):
     uid = client.post("/users", json=USER).json()["id"]
     assert client.get(f"/users/{uid}/progress").json()["workouts"] == 0
+
+
+def test_workout_volume_and_calorie_estimate(client):
+    uid = client.post("/users", json=USER).json()["id"]
+    w = client.post(f"/users/{uid}/workouts", json=workout()).json()
+    assert w["total_volume_kg"] == 2 * 8 * 70
+    assert w["estimated_kcal"] == 390          # MET 5.0 (RPE 7) x 78 kg x 1 hour
+
+
+def test_new_personal_record(client):
+    uid = client.post("/users", json=USER).json()["id"]
+    bench = lambda kg: [{"exercise_id": "Barbell_Bench_Press", "reps": 8, "weight_kg": kg}]
+    today = date.today()
+    first = client.post(f"/users/{uid}/workouts", json=workout(today - timedelta(days=4), sets=bench(70))).json()
+    assert first["new_records"] == []          # nothing to beat yet
+    better = client.post(f"/users/{uid}/workouts", json=workout(today - timedelta(days=2), sets=bench(75))).json()
+    assert better["new_records"] == ["barbell bench press - medium grip"]
+    worse = client.post(f"/users/{uid}/workouts", json=workout(today, sets=bench(60))).json()
+    assert worse["new_records"] == []
+
+
+def test_exercise_history(client):
+    uid = client.post("/users", json=USER).json()["id"]
+    client.post(f"/users/{uid}/workouts", json=workout())
+    h = client.get(f"/users/{uid}/exercise-history/Barbell_Bench_Press").json()
+    assert len(h) == 1 and h[0]["best_est_1rm_kg"] == pytest.approx(88.7)
+    assert client.get(f"/users/{uid}/exercise-history/Nope").status_code == 404
+
+
+def test_export_contains_only_own_data(client):
+    uid = client.post("/users", json=USER).json()["id"]
+    other = client.post("/users", json=USER).json()["id"]
+    client.post(f"/users/{uid}/workouts", json=workout())
+    client.post(f"/users/{other}/workouts", json=workout())
+    data = client.get(f"/users/{uid}/export").json()
+    assert data["profile"]["id"] == uid
+    assert len(data["workouts"]) == 1
+
+
+def test_coach_gets_progress_but_no_personal_details(client, llm):
+    uid = client.post("/demo-users/legs_neglected").json()["id"]
+    r = client.post(f"/users/{uid}/coach", json={"question": "Which muscles am I neglecting?"})
+    assert r.status_code == 200
+    assert r.json()["answer"] == "Train your legs."
+    assert set(r.json()["context"]) == {"goal", "experience", "key_findings", "progress"}
+
+    system = llm.calls[0][0]["content"]
+    assert '"quadriceps": 17' in system                        # the computed numbers are there
+    for personal in ['"age"', '"gender"', '"height_cm"', '"weight_kg"', '"id"']:
+        assert personal not in system
+
+
+def test_coach_follow_up_includes_history(client, llm):
+    uid = client.post("/demo-users/legs_neglected").json()["id"]
+    history = [{"role": "user", "content": "Am I improving?"}, {"role": "assistant", "content": "Yes."}]
+    client.post(f"/users/{uid}/coach", json={"question": "On which lift?", "history": history})
+    roles = [m["role"] for m in llm.calls[0]]
+    assert roles == ["system", "user", "assistant", "user"]
+
+
+def test_coach_logs_every_answer(client, tmp_path):
+    uid = client.post("/demo-users/legs_neglected").json()["id"]
+    client.post(f"/users/{uid}/coach", json={"question": "Am I improving?"})
+    lines = (tmp_path / "coach_log.jsonl").read_text().splitlines()
+    assert len(lines) == 1 and '"Am I improving?"' in lines[0]
+
+
+def test_coach_unavailable_gives_clear_error(tmp_path):
+    with make_client(tmp_path, FakeLLM(fail=True)) as c:
+        uid = c.post("/users", json=USER).json()["id"]
+        r = c.post(f"/users/{uid}/coach", json={"question": "Hi"})
+    assert r.status_code == 503 and "Ollama" in r.json()["detail"]
+
+
+def test_empty_question_rejected(client):
+    uid = client.post("/users", json=USER).json()["id"]
+    assert client.post(f"/users/{uid}/coach", json={"question": ""}).status_code == 422
+
+
+def test_coach_key_findings_are_calculated_by_code(client):
+    uid = client.post("/demo-users/legs_neglected").json()["id"]
+    findings = client.post(f"/users/{uid}/coach", json={"question": "What next?"}).json()["context"]["key_findings"]
+    assert findings["neglected_muscles"]["quadriceps"] == 17
+    assert findings["stalled_lifts"] == ["standing military press"]
+    assert "triceps pushdown" in findings["improving_lifts"]
+    assert "barbell squat" in findings["lifts_not_done_recently"]
+
+
+def test_coach_prompt_v1_has_no_key_findings():
+    from src.coach import build_context
+    summary = {"workouts": 1, "days_since_last_trained": {}, "strength_trends": {}}
+    assert "key_findings" not in build_context("build muscle", "beginner", summary, version="v1")
+    assert "key_findings" in build_context("build muscle", "beginner", summary, version="v2")

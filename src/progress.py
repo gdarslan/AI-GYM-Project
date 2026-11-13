@@ -82,6 +82,8 @@ def progress_summary(log: pd.DataFrame, exercises: pd.DataFrame, today: date | N
     recent = mv[mv["date"] > pd.Timestamp(today) - pd.Timedelta(days=RECENT_DAYS)]
     last_trained = mv.groupby("muscle")["date"].max()
     workout_days = log["date"].dt.normalize().unique()
+    days_since = {m: (int((pd.Timestamp(today) - last_trained[m]).days) if m in last_trained else None)
+                  for m in MAJOR_MUSCLES}
     return {
         "period_weeks": weeks,
         "period": f"{log['date'].min():%Y-%m-%d} to {log['date'].max():%Y-%m-%d}",
@@ -89,9 +91,8 @@ def progress_summary(log: pd.DataFrame, exercises: pd.DataFrame, today: date | N
         "workouts_per_week": round(len(workout_days) / weeks, 1),
         "volume_share_pct": _share_pct(mv),
         "volume_share_pct_last_2_weeks": _share_pct(recent),
-        "days_since_last_trained": {
-            m: (int((pd.Timestamp(today) - last_trained[m]).days) if m in last_trained else None)
-            for m in MAJOR_MUSCLES},
+        "days_since_last_trained": days_since,
+        "recovery_guideline": recovery_status(days_since),
         "strength_trends": strength_trends(log, today),
     }
 
@@ -100,3 +101,32 @@ def neglected_muscles(summary: dict, min_days: int = NOT_DONE_RECENTLY_DAYS) -> 
     """Muscle groups not trained for `min_days` or more, or not at all in the period."""
     days = summary.get("days_since_last_trained", {})
     return [m for m, d in days.items() if d is None or d >= min_days]
+
+
+RECOVERY_DAYS = 2   # general guideline of about 48 hours rest per muscle group; a heuristic, not a prediction
+
+
+def recovery_status(days_since: dict) -> dict:
+    """'recovering' if a muscle group was trained less than RECOVERY_DAYS ago, else 'ready'."""
+    return {m: ("recovering" if d < RECOVERY_DAYS else "ready") for m, d in days_since.items() if d is not None}
+
+
+def exercise_history(log: pd.DataFrame, exercise: str) -> list[dict]:
+    """Per workout day: the sets done for one exercise and the best estimated 1RM, oldest first."""
+    ex = log[log["exercise"] == exercise].assign(date=lambda d: pd.to_datetime(d["date"]))
+    out = []
+    for day, sets in ex.groupby("date"):
+        out.append({"date": f"{day:%Y-%m-%d}",
+                    "sets": [{"reps": int(r), "weight_kg": float(w)} for r, w in zip(sets["reps"], sets["weight_kg"])],
+                    "best_est_1rm_kg": round(float(estimated_1rm(sets["weight_kg"], sets["reps"]).max()), 1),
+                    "volume_kg": float((sets["reps"] * sets["weight_kg"]).sum())})
+    return out
+
+
+def new_records(earlier: pd.DataFrame, workout: pd.DataFrame) -> list[str]:
+    """Exercises in `workout` whose best estimated 1RM beats every earlier session (weighted exercises only)."""
+    if earlier.empty:
+        return []
+    best_before = estimated_1rm(earlier["weight_kg"], earlier["reps"]).groupby(earlier["exercise"]).max()
+    best_now = estimated_1rm(workout["weight_kg"], workout["reps"]).groupby(workout["exercise"]).max()
+    return sorted(ex for ex, v in best_now.items() if ex in best_before and v > best_before[ex] and v > 0)

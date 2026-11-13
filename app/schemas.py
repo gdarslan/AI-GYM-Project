@@ -57,6 +57,26 @@ class WorkoutOut(BaseModel):
     duration_min: int | None
     rpe: int | None
     sets: list[SetOut]
+    total_volume_kg: float
+    estimated_kcal: int | None          # MET formula, see src/calories.py
+    new_records: list[str] = []         # only filled when a workout is logged
+
+
+class ChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=4000)
+
+
+class CoachIn(BaseModel):
+    question: str = Field(min_length=1, max_length=500)
+    history: list[ChatTurn] = Field(default=[], max_length=20)
+
+
+class CoachOut(BaseModel):
+    answer: str
+    model: str
+    prompt_version: str
+    context: dict                        # exactly what the model was given
 
 
 class ExerciseOut(BaseModel):

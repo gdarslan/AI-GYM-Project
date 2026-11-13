@@ -4,7 +4,9 @@ import pandas as pd
 import pytest
 
 from src.personas import legs_neglected
-from src.progress import estimated_1rm, neglected_muscles, progress_summary
+from src.calories import estimate_kcal, met_for_rpe
+from src.progress import (estimated_1rm, exercise_history, neglected_muscles, new_records, progress_summary,
+                          recovery_status)
 
 TODAY = date(2026, 11, 9)
 
@@ -82,3 +84,36 @@ def test_unknown_exercise_is_an_error():
     log = pd.DataFrame([{"date": "2026-11-05", "exercise": "made up lift", "reps": 5, "weight_kg": 50}])
     with pytest.raises(ValueError, match="made up lift"):
         progress_summary(log, EXERCISES, TODAY)
+
+
+def test_recovery_guideline(summary):
+    assert recovery_status({"chest": 0, "quadriceps": 1, "lats": 2, "abdominals": None}) == {
+        "chest": "recovering", "quadriceps": "recovering", "lats": "ready"}
+    assert summary["recovery_guideline"]["chest"] == "ready"      # trained 3 days ago
+
+
+def test_exercise_history_per_day():
+    log = pd.DataFrame([("2026-11-01", "barbell curl", 8, 30), ("2026-11-01", "barbell curl", 6, 32.5),
+                        ("2026-11-05", "barbell curl", 8, 32.5), ("2026-11-05", "barbell squat", 5, 100)],
+                       columns=["date", "exercise", "reps", "weight_kg"])
+    h = exercise_history(log, "barbell curl")
+    assert [d["date"] for d in h] == ["2026-11-01", "2026-11-05"]
+    assert h[0]["best_est_1rm_kg"] == pytest.approx(39.0)          # max(30 x (1+8/30), 32.5 x 1.2)
+    assert h[1]["volume_kg"] == 260
+
+
+def test_new_records():
+    cols = ["date", "exercise", "reps", "weight_kg"]
+    earlier = pd.DataFrame([("2026-11-01", "barbell curl", 8, 30)], columns=cols)
+    better = pd.DataFrame([("2026-11-05", "barbell curl", 8, 32.5)], columns=cols)
+    same = pd.DataFrame([("2026-11-05", "barbell curl", 8, 30)], columns=cols)
+    new_lift = pd.DataFrame([("2026-11-05", "barbell squat", 5, 100)], columns=cols)
+    assert new_records(earlier, better) == ["barbell curl"]
+    assert new_records(earlier, same) == []
+    assert new_records(earlier, new_lift) == []
+
+
+def test_calorie_estimate():
+    assert [met_for_rpe(r) for r in (None, 1, 4, 5, 7, 8, 10)] == [5.0, 3.5, 3.5, 5.0, 5.0, 6.0, 6.0]
+    assert estimate_kcal(80, 90, 8) == 720                         # 6.0 x 80 kg x 1.5 h
+    assert estimate_kcal(80, None, 8) is None

@@ -12,6 +12,9 @@ data/processed/*
 # App database: holds users' workout data, never committed
 data/*.db
 
+# Coach question/answer log (evaluation evidence, contains training data)
+logs/
+
 # --- Secrets ---
 .env
 .env.*
