@@ -6,7 +6,7 @@
 import json
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import altair as alt
@@ -17,9 +17,11 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from app import ui  # noqa: E402
+from src.calories import estimate_kcal  # noqa: E402
 from src.progress import neglected_muscles  # noqa: E402
 
-API = os.environ.get("GYM_API_URL", "http://localhost:8000")
+# 127.0.0.1, not "localhost": on Windows "localhost" tries IPv6 first and every new connection then waits ~2 s
+API = os.environ.get("GYM_API_URL", "http://127.0.0.1:8000")
 GOALS = ["build muscle", "get stronger", "lose fat", "general fitness"]
 LEVELS = ["beginner", "intermediate", "advanced"]
 GENDERS = ["male", "female", "other"]
@@ -61,12 +63,18 @@ def log_out_locally(message: str | None = None):
         st.session_state.flash = message
 
 
+@st.cache_resource
+def http_client() -> httpx.Client:
+    """One connection to the API that stays open, shared by all reruns (a new connection costs ~250 ms)."""
+    return httpx.Client(base_url=API, timeout=30)
+
+
 def api(method: str, path: str, timeout: float = 30, **kwargs):
     """Call the backend with the login token; show a readable error instead of a crash."""
     if "token" in st.session_state:
         kwargs.setdefault("headers", {})["Authorization"] = f"Bearer {st.session_state.token}"
     try:
-        r = httpx.request(method, API + path, timeout=timeout, **kwargs)
+        r = http_client().request(method, path, timeout=timeout, **kwargs)
     except httpx.ConnectError:
         st.error(f"Cannot reach the API at {API}. Start the app with start_app.bat, "
                  "or run: `python -m uvicorn app.main:app --reload`")
@@ -271,6 +279,44 @@ def progress_page():
                             width="stretch")
 
 
+FOCUS_OPTIONS = ["chest", "back", "shoulders", "arms", "legs", "core", "full body"]
+MAX_PICKS = 15          # exercises added in one go
+MAX_SETS = 100          # the API accepts at most 100 sets per workout
+PLAN_COLUMNS = {"exercise": "object", "sets": "int64", "reps": "int64", "weight_kg": "float64"}
+
+
+def empty_plan() -> pd.DataFrame:
+    return pd.DataFrame({c: pd.Series(dtype=t) for c, t in PLAN_COLUMNS.items()})
+
+
+def exercise_library() -> dict:
+    """All 876 exercises by name, fetched once per session."""
+    if "library" not in st.session_state:
+        st.session_state.library = {e["name"]: e for e in api("GET", "/exercises", params={"limit": 1000}) or []}
+    return st.session_state.library
+
+
+def current_plan() -> pd.DataFrame:
+    """The workout table including edits the user made in it since the last save of the plan."""
+    df = st.session_state.get("plan", empty_plan()).copy().reset_index(drop=True)
+    changes = st.session_state.get("plan_editor") or {}
+    for i, cols in changes.get("edited_rows", {}).items():
+        for col, value in cols.items():
+            df.loc[int(i), col] = value
+    df = df.drop(index=[i for i in changes.get("deleted_rows", []) if i in df.index])
+    added = pd.DataFrame(changes.get("added_rows", []), columns=list(PLAN_COLUMNS))
+    return pd.concat([df, added], ignore_index=True) if not added.empty else df.reset_index(drop=True)
+
+
+def add_to_plan(names: list[str], last_weight: dict):
+    rows = pd.DataFrame([{"exercise": n, "sets": 3, "reps": 8, "weight_kg": float(last_weight.get(n, 0.0))}
+                         for n in names])
+    st.session_state.plan = pd.concat([current_plan(), rows], ignore_index=True)
+    st.session_state.pop("plan_editor", None)      # the table is rebuilt from the new plan
+    st.session_state.add_round = st.session_state.get("add_round", 0) + 1     # empties the pick lists
+    st.rerun()
+
+
 def last_session_text(exercise_id):
     history = api("GET", f"/me/exercise-history/{exercise_id}") or []
     if not history:
@@ -281,64 +327,143 @@ def last_session_text(exercise_id):
 
 
 def log_workout_page():
-    ui.page_header("Log a workout", "Add your sets, then save. Your progress updates straight away.")
-    pending = st.session_state.setdefault("pending_sets", [])
+    ui.page_header("Log a workout", "Build today's list of exercises, then save the whole session at once.")
     saved = st.session_state.pop("last_saved", None)
     if saved:
         kcal = f" · about {saved['estimated_kcal']} kcal" if saved["estimated_kcal"] else ""
-        st.success(f"Workout saved: {saved['total_volume_kg']:,.0f} kg total volume{kcal}.")
+        st.success(f"Workout saved: {len(saved['sets'])} sets, {saved['total_volume_kg']:,.0f} kg total "
+                   f"volume{kcal}.", icon=":material/check_circle:")
         for ex in saved["new_records"]:
             st.success(f"New personal best: {ex}", icon=":material/emoji_events:")
 
-    a, b, c = st.columns(3)
-    day = a.date_input("Date", date.today(), max_value=date.today())
-    duration = b.number_input("Duration (min)", 1, 300, 60)
-    rpe = c.slider("How hard was it? (RPE 1–10)", 1, 10, 7)
-
+    library = exercise_library()
     workouts = api("GET", "/me/workouts") or []
-    if workouts and not pending and st.button(f"Repeat last workout ({workouts[0]['date']})",
-                                              icon=":material/replay:"):
-        pending += [{k: s[k] for k in ("exercise_id", "exercise", "reps", "weight_kg")} for s in workouts[0]["sets"]]
-        st.rerun()
+    last_weight, times_done = {}, {}
+    for w in workouts:                                   # newest first: the first weight seen is the latest
+        for s in w["sets"]:
+            last_weight.setdefault(s["exercise"], s["weight_kg"])
+            times_done[s["exercise"]] = times_done.get(s["exercise"], 0) + 1
 
-    ui.section("Add sets")
-    search = st.text_input("Search exercise or muscle", placeholder="e.g. bench, squat, biceps")
-    found = (api("GET", "/exercises", params={"search": search, "limit": 30}) or []) if search.strip() else []
-    if not search.strip():
-        st.caption("Type a name or a muscle to search the 876 exercises.")
-    elif found:
-        ex = st.selectbox("Exercise", found, format_func=lambda e: f"{e['name']}  —  {e['primary_muscles']}")
-        st.caption(last_session_text(ex["id"]))
-        a, b, c, d = st.columns(4)
-        n_sets = a.number_input("Sets", 1, 10, 3)
-        reps = b.number_input("Reps", 1, 100, 8)
-        kg = c.number_input("Weight (kg, 0 = bodyweight)", 0.0, 500.0, 20.0, step=2.5)
-        d.write("")
-        if d.button("Add", width="stretch", icon=":material/add:"):
-            pending += [{"exercise_id": ex["id"], "exercise": ex["name"], "reps": reps, "weight_kg": kg}
-                        for _ in range(n_sets)]
-            st.rerun()
-    elif search:
-        st.info("No exercise found. Try a shorter word.")
+    # ---- the session ----
+    ui.section("Session")
+    a, b, c, d = st.columns([3, 2, 2, 3])
+    day = a.date_input("Date", date.today(), max_value=date.today())
+    start = b.time_input("Start time", datetime.now().time().replace(second=0, microsecond=0), step=300)
+    duration = c.number_input("Duration (min)", 1, 300, 60)
+    rpe = d.slider("How hard was it? (RPE 1–10)", 1, 10, 7)
+    focus = st.pills("Focus of the day", FOCUS_OPTIONS, selection_mode="multi", key="focus") or []
 
-    if pending:
-        ui.section(f"This workout · {len(pending)} sets")
-        st.dataframe(pd.DataFrame(pending)[["exercise", "reps", "weight_kg"]], width="stretch", hide_index=True)
-        a, b, c = st.columns(3)
-        if a.button("Remove last set", icon=":material/undo:", width="stretch"):
-            pending.pop()
-            st.rerun()
-        if b.button("Clear all", icon=":material/delete:", width="stretch"):
-            pending.clear()
-            st.rerun()
-        if c.button("Save workout", type="primary", icon=":material/save:", width="stretch"):
-            body = {"date": str(day), "duration_min": duration, "rpe": rpe,
-                    "sets": [{k: s[k] for k in ("exercise_id", "reps", "weight_kg")} for s in pending]}
-            result = api("POST", "/me/workouts", json=body)
-            if result:
-                st.session_state.pending_sets = []
-                st.session_state.last_saved = result
+    # ---- adding exercises ----
+    ui.section("Add exercises")
+    suggest_tab, search_tab, copy_tab = st.tabs(["Suggestions", "Search all 876", "Copy a past workout"])
+    with suggest_tab:
+        muscles = {m for f in focus for m in ui.FOCUS_GROUPS.get(f, [])}
+        if "full body" in focus:
+            muscles = {m for group in ui.FOCUS_GROUPS.values() for m in group}
+        if not muscles:
+            st.caption("Pick the focus of the day above to see exercises for those muscles.")
+        else:
+            def trains(e):
+                return any(m in muscles for m in e["primary_muscles"].split("; "))
+            yours = sorted((n for n in times_done if n in library and trains(library[n])), key=lambda n: -times_done[n])
+            common = [n for n, e in library.items() if trains(e) and n not in yours and e["category"] == "strength"
+                      and e["equipment"] in ("barbell", "dumbbell", "cable", "machine", "body only")
+                      and e["level"] in ("beginner", "intermediate")]
+            picks = st.multiselect("Exercises for " + ", ".join(focus), yours + common,
+                                   format_func=lambda n: f"★ {n}" if n in yours else n,
+                                   placeholder="Choose one or more (★ = you did it before)",
+                                   key=f"suggest_{st.session_state.get('add_round', 0)}")
+            if len(picks) > MAX_PICKS:
+                st.warning(f"That is {len(picks)} exercises. Add at most {MAX_PICKS} at a time.")
+            if st.button("Add to workout", key="add_suggested", type="primary",
+                         disabled=not picks or len(picks) > MAX_PICKS,
+                         icon=":material/playlist_add:"):
+                add_to_plan(picks, last_weight)
+    with search_tab:
+        query = st.text_input("Search exercise or muscle", placeholder="e.g. bench, squat, biceps")
+        words = query.lower().split()
+        hits = [n for n, e in library.items()
+                if words and all(w in n or w in e["primary_muscles"] for w in words)][:60]
+        picks = st.multiselect("Results", hits, placeholder="Choose one or more",
+                               key=f"search_{st.session_state.get('add_round', 0)}") if words else []
+        if len(picks) > MAX_PICKS:
+            st.warning(f"That is {len(picks)} exercises. Add at most {MAX_PICKS} at a time.")
+        if words and not hits:
+            st.info("No exercise found. Try a shorter word.")
+        if st.button("Add to workout", key="add_searched", type="primary",
+                     disabled=not picks or len(picks) > MAX_PICKS,
+                     icon=":material/playlist_add:"):
+            add_to_plan(picks, last_weight)
+    with copy_tab:
+        if not workouts:
+            st.caption("No earlier workouts yet.")
+        else:
+            past = st.selectbox("Earlier workout", workouts, format_func=lambda w: (
+                f"{w['date']}{' ' + w['start_time'][:5] if w.get('start_time') else ''} · "
+                f"{w.get('focus') or 'no focus'} · {len({s['exercise'] for s in w['sets']})} exercises"))
+            if st.button("Copy its exercises", icon=":material/content_copy:"):
+                grouped = pd.DataFrame(past["sets"]).groupby("exercise", sort=False).agg(
+                    sets=("reps", "size"), reps=("reps", "first"), weight_kg=("weight_kg", "max")).reset_index()
+                st.session_state.plan = pd.concat([current_plan(), grouped], ignore_index=True)
+                st.session_state.pop("plan_editor", None)
                 st.rerun()
+
+    # ---- the list ----
+    ui.section("Today's workout")
+    plan = st.session_state.get("plan", empty_plan())
+    edited = st.data_editor(plan, key="plan_editor", num_rows="dynamic", hide_index=True, width="stretch",
+                            column_config={
+                                "exercise": st.column_config.SelectboxColumn("Exercise", options=sorted(library),
+                                                                             required=True, width="large"),
+                                "sets": st.column_config.NumberColumn("Sets", min_value=1, max_value=10, step=1,
+                                                                      default=3, required=True),
+                                "reps": st.column_config.NumberColumn("Reps", min_value=1, max_value=100, step=1,
+                                                                      default=8, required=True),
+                                "weight_kg": st.column_config.NumberColumn("Weight (kg)", min_value=0.0,
+                                                                           max_value=500.0, step=2.5, default=0.0,
+                                                                           format="%.1f")})
+    rows = edited.dropna(subset=["exercise"])
+    rows = rows[rows["exercise"].isin(library)]
+    if rows.empty:
+        st.caption("Add exercises above, or click the empty row of the table to type one in. "
+                   "Weight 0 means bodyweight; you can change every number in the table.")
+        return
+    n_sets = int(rows["sets"].fillna(0).sum())
+    volume = float((rows["sets"].fillna(0) * rows["reps"].fillna(0) * rows["weight_kg"].fillna(0)).sum())
+    kcal = estimate_kcal(me["weight_kg"], duration, rpe)
+    ui.cards([("Exercises", len(rows), ", ".join(focus) or "no focus chosen", False),
+              ("Sets", n_sets, "in this workout", False),
+              ("Volume", f"{volume:,.0f} kg", "reps × weight", False),
+              ("Calories", f"≈{kcal}" if kcal else "–", "MET-formula estimate", False)])
+
+    with st.expander("About these exercises", expanded=True, icon=":material/info:"):
+        names = list(dict.fromkeys(rows["exercise"]))
+        cols = st.columns(2)
+        for i, name in enumerate(names):
+            e = library[name]
+            cols[i % 2].markdown(ui.exercise_card(name, e["primary_muscles"], e["secondary_muscles"], e["equipment"],
+                                                  e["level"], e["category"], last_session_text(e["id"])),
+                                 unsafe_allow_html=True)
+
+    a, b = st.columns([1, 3])
+    if a.button("Clear list", icon=":material/delete_sweep:", width="stretch"):
+        st.session_state.plan = empty_plan()
+        st.session_state.pop("plan_editor", None)
+        st.rerun()
+    if n_sets > MAX_SETS:
+        st.error(f"A workout can hold at most {MAX_SETS} sets; this one has {n_sets}. Remove some rows or sets.")
+    if b.button(f"Save workout · {n_sets} sets", type="primary", icon=":material/save:", width="stretch",
+                disabled=n_sets > MAX_SETS):
+        sets = [{"exercise_id": library[r.exercise]["id"], "reps": int(r.reps), "weight_kg": float(r.weight_kg or 0)}
+                for r in rows.itertuples() for _ in range(int(r.sets))]
+        result = api("POST", "/me/workouts", json={
+            "date": str(day), "start_time": start.strftime("%H:%M"), "focus": ", ".join(focus) or None,
+            "duration_min": duration, "rpe": rpe, "sets": sets})
+        if result:
+            st.session_state.plan = empty_plan()
+            st.session_state.pop("plan_editor", None)
+            st.session_state.last_saved = result
+            st.rerun()
 
 
 def history_page():
@@ -357,7 +482,9 @@ def history_page():
         summary = (sets.groupby("exercise", sort=False)
                    .agg(sets=("reps", "size"), reps=("reps", "first"), weight_kg=("weight_kg", "max")))
         kcal = f" · ≈{w['estimated_kcal']} kcal" if w["estimated_kcal"] else ""
-        title = (f"{w['date']} · {len(summary)} exercises · {w['total_volume_kg']:,.0f} kg · "
+        when = f"{w['date']}{' ' + w['start_time'][:5] if w.get('start_time') else ''}"
+        focus = f" · {w['focus']}" if w.get("focus") else ""
+        title = (f"{when}{focus} · {len(summary)} exercises · {w['total_volume_kg']:,.0f} kg · "
                  f"{w['duration_min'] or '?'} min · RPE {w['rpe'] or '?'}{kcal}")
         with st.expander(title, icon=":material/fitness_center:"):
             st.dataframe(summary, width="stretch")

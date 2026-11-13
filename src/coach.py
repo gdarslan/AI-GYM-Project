@@ -35,12 +35,14 @@ class LLMClient(Protocol):
 class OllamaClient:
     def __init__(self, model: str | None = None, url: str | None = None, timeout: float = 120):
         self.model = model or os.environ.get("GYM_LLM_MODEL", "llama3.2:3b")
-        self.url = (url or os.environ.get("OLLAMA_URL", "http://localhost:11434")).rstrip("/")
+        # 127.0.0.1, not "localhost": on Windows "localhost" tries IPv6 first and each request then waits ~2 s
+        self.url = (url or os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")).rstrip("/")
         self.timeout = timeout
+        self._http = httpx.Client(timeout=timeout)       # one connection that stays open
 
     def chat(self, messages: list[dict]) -> str:
         try:
-            r = httpx.post(f"{self.url}/api/chat", timeout=self.timeout, json={
+            r = self._http.post(f"{self.url}/api/chat", json={
                 "model": self.model, "messages": messages, "stream": False, "options": {"temperature": 0.2},
                 "keep_alive": "30m"})     # keep the model loaded; loading it again takes ~50 s
         except httpx.HTTPError as e:

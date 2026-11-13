@@ -7,7 +7,7 @@ Users only ever reach their own data through /me/...; admins manage accounts but
 """
 import secrets
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -128,7 +128,8 @@ def account_out(user: User, workouts: int) -> AccountOut:
 
 def workout_out(w: Workout, records: list[str] | None = None) -> WorkoutOut:
     kcal = estimate_kcal(w.user.weight_kg, w.duration_min, w.rpe) if w.user.weight_kg else None
-    return WorkoutOut(id=w.id, date=w.date, duration_min=w.duration_min, rpe=w.rpe,
+    return WorkoutOut(id=w.id, date=w.date, start_time=w.start_time, focus=w.focus,
+                      duration_min=w.duration_min, rpe=w.rpe,
                       sets=[SetOut(exercise_id=st.exercise_id, exercise=st.exercise.name, set_number=st.set_number,
                                    reps=st.reps, weight_kg=st.weight_kg) for st in w.sets],
                       total_volume_kg=sum(st.reps * st.weight_kg for st in w.sets),
@@ -155,7 +156,8 @@ def add_workout(s: Session, user: User, data: WorkoutIn) -> Workout:
     known = set(s.scalars(select(Exercise.id).where(Exercise.id.in_(ids))))
     if ids - known:
         raise HTTPException(422, f"Unknown exercise ids: {sorted(ids - known)}")
-    workout = Workout(user=user, date=data.date, duration_min=data.duration_min, rpe=data.rpe,
+    workout = Workout(user=user, date=data.date, start_time=data.start_time, focus=data.focus,
+                      duration_min=data.duration_min, rpe=data.rpe,
                       sets=[WorkoutSet(exercise_id=st.exercise_id, set_number=i + 1, reps=st.reps,
                                        weight_kg=st.weight_kg) for i, st in enumerate(data.sets)])
     s.add(workout)
@@ -169,7 +171,7 @@ def add_routes(api: FastAPI) -> None:
         return {"status": "ok"}
 
     @api.get("/exercises", response_model=list[ExerciseOut])
-    def search_exercises(search: str = Query("", max_length=100), limit: int = Query(20, ge=1, le=100),
+    def search_exercises(search: str = Query("", max_length=100), limit: int = Query(20, ge=1, le=1000),
                          s: Session = Depends(get_session)):
         q = select(Exercise).order_by(Exercise.name).limit(limit)
         for word in search.lower().split():
@@ -224,7 +226,8 @@ def add_routes(api: FastAPI) -> None:
         ids = {e.name: e.id for e in s.scalars(select(Exercise).where(Exercise.name.in_(names)))}
         for w in persona["workouts"]:
             add_workout(s, user, WorkoutIn(
-                date=w["date"], duration_min=w["duration_min"], rpe=w["rpe"],
+                date=w["date"], start_time=w.get("start_time"), focus=w.get("focus"),
+                duration_min=w["duration_min"], rpe=w["rpe"],
                 sets=[{"exercise_id": ids[st["exercise"]], "reps": st["reps"], "weight_kg": st["weight_kg"]}
                       for st in w["sets"]]))
         return start_session(s, user)
@@ -301,7 +304,8 @@ def add_routes(api: FastAPI) -> None:
 
     @api.get("/me/workouts", response_model=list[WorkoutOut])
     def list_workouts(user: User = Depends(current_user)):
-        return [workout_out(w) for w in sorted(user.workouts, key=lambda w: w.date, reverse=True)]
+        return [workout_out(w) for w in sorted(user.workouts, key=lambda w: (w.date, w.start_time or time.min),
+                                               reverse=True)]
 
     @api.delete("/me/workouts/{workout_id}", status_code=204)
     def delete_workout(workout_id: int, user: User = Depends(current_user), s: Session = Depends(get_session)):

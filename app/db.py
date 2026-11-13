@@ -3,12 +3,12 @@
 The database file lives at data/app.db (not committed). Set GYM_DB_URL to use another database.
 """
 import os
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy import (Boolean, Date, DateTime, Float, ForeignKey, Integer, String, create_engine, func, inspect,
-                        select)
+from sqlalchemy import (Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Time, create_engine, func,
+                        inspect, select, text)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -94,6 +94,8 @@ class Workout(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     date: Mapped[date] = mapped_column(Date)
+    start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    focus: Mapped[str | None] = mapped_column(String(80), nullable=True)      # e.g. "chest, arms"
     duration_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rpe: Mapped[int | None] = mapped_column(Integer, nullable=True)
     user: Mapped[User] = relationship(back_populates="workouts")
@@ -133,12 +135,30 @@ def backup_outdated_db(engine) -> Path | None:
     return backup
 
 
+# Columns added after the first release: (table, column, SQL type). New columns are always optional, so existing
+# rows stay valid and no data has to be moved.
+ADDED_COLUMNS = [("workouts", "start_time", "TIME"), ("workouts", "focus", "VARCHAR(80)")]
+
+
+def add_missing_columns(engine) -> list[str]:
+    """Bring an existing database up to date without losing its data."""
+    added = []
+    with engine.begin() as conn:
+        for table, column, sql_type in ADDED_COLUMNS:
+            existing = {c["name"] for c in inspect(conn).get_columns(table)}
+            if column not in existing:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
+                added.append(f"{table}.{column}")
+    return added
+
+
 def init_db(engine, exercises_csv: Path = EXERCISES_CSV) -> None:
-    """Create the tables and load the exercise library once."""
+    """Create the tables, update older databases, and load the exercise library once."""
     backup = backup_outdated_db(engine)
     if backup:
         print(f"Old database without logins moved to {backup}; a new one is created.")
     Base.metadata.create_all(engine)
+    add_missing_columns(engine)
     Session = sessionmaker(engine)
     with Session() as s:
         if s.scalar(select(func.count()).select_from(Exercise)):

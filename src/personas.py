@@ -3,7 +3,7 @@
 Each persona returns a profile and a list of workouts relative to `today`, so the
 expected facts (e.g. "legs not trained for 17 days") stay true whenever it is run.
 """
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 
 
 def _sets(exercise, weight, reps=8, n=3):
@@ -36,8 +36,9 @@ def legs_neglected(today: date | None = None) -> dict:
     workouts = []
     for w in range(4):
         for day, session in [(0, push), (2, pull), (4, legs if w < 2 else push)]:
-            workouts.append({"date": start + timedelta(days=7 * w + day), "duration_min": 60, "rpe": 7,
-                             "sets": session(w)})
+            focus = "legs" if session is legs else "back, arms" if session is pull else "chest, shoulders, arms"
+            workouts.append({"date": start + timedelta(days=7 * w + day), "start_time": time(18, 0),
+                             "focus": focus, "duration_min": 60, "rpe": 7, "sets": session(w)})
     profile = {"age": 24, "gender": "male", "height_cm": 180, "weight_kg": 78,
                "goal": "build muscle", "experience": "intermediate"}
     return {"profile": profile, "workouts": workouts}

@@ -1,5 +1,5 @@
 """Request and response shapes. Input checks live here, so impossible values never reach the database."""
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -80,6 +80,8 @@ class SetIn(BaseModel):
 
 class WorkoutIn(BaseModel):
     date: date
+    start_time: time | None = None
+    focus: str | None = Field(default=None, max_length=80)
     duration_min: int | None = Field(default=None, ge=1, le=300)
     rpe: int | None = Field(default=None, ge=1, le=10)
     sets: list[SetIn] = Field(min_length=1, max_length=100)
@@ -103,6 +105,8 @@ class SetOut(BaseModel):
 class WorkoutOut(BaseModel):
     id: int
     date: date
+    start_time: time | None = None
+    focus: str | None = None
     duration_min: int | None
     rpe: int | None
     sets: list[SetOut]
@@ -118,6 +122,8 @@ class ExerciseOut(BaseModel):
     primary_muscles: str
     secondary_muscles: str
     equipment: str
+    level: str
+    category: str
 
 
 # ---------------- coach ----------------

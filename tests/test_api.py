@@ -242,7 +242,7 @@ def test_exercise_search_is_public(client):
 
 @pytest.mark.parametrize("path, params", [("/me/progress", {"weeks": 0}), ("/me/progress", {"weeks": -3}),
                                            ("/me/progress", {"weeks": 53}), ("/exercises", {"limit": -1}),
-                                           ("/exercises", {"limit": 0}), ("/exercises", {"limit": 101})])
+                                           ("/exercises", {"limit": 0}), ("/exercises", {"limit": 1001})])
 def test_out_of_range_query_values_rejected(client, path, params):
     h = auth(client)
     client.post("/me/workouts", headers=h, json=workout())      # a workout today: weeks=0 used to divide by zero
@@ -394,3 +394,31 @@ def test_there_is_always_an_admin(client):
     assert client.put(f"/admin/users/{me['id']}/role", headers=admin, json={"role": "user"}).status_code == 409
     assert client.post("/me/delete", headers=admin, json={"password": PASSWORD}).status_code == 409
     assert client.delete(f"/admin/users/{me['id']}", headers=admin).status_code == 409
+
+
+def test_workout_keeps_start_time_and_focus(client):
+    h = auth(client)
+    r = client.post("/me/workouts", headers=h, json=workout(start_time="18:30", focus="chest, arms"))
+    assert r.status_code == 201
+    w = client.get("/me/workouts", headers=h).json()[0]
+    assert w["start_time"] == "18:30:00" and w["focus"] == "chest, arms"
+    assert client.post("/me/workouts", headers=h, json=workout(focus="x" * 81)).status_code == 422
+
+
+def test_whole_exercise_library_can_be_listed(client):
+    assert len(client.get("/exercises", params={"limit": 1000}).json()) == len(EXERCISES)
+
+
+def test_older_database_gets_new_columns_without_losing_data(tmp_path):
+    """A database made before start_time and focus existed is updated in place."""
+    import sqlite3
+    db = tmp_path / "old.db"
+    con = sqlite3.connect(db)
+    con.executescript("CREATE TABLE workouts (id INTEGER PRIMARY KEY, user_id INTEGER, date DATE, "
+                      "duration_min INTEGER, rpe INTEGER); INSERT INTO workouts VALUES (1, 1, '2026-11-01', 60, 7);")
+    con.close()
+    from app.db import add_missing_columns, make_engine
+    assert add_missing_columns(make_engine(f"sqlite:///{db}")) == ["workouts.start_time", "workouts.focus"]
+    con = sqlite3.connect(db)
+    assert con.execute("SELECT date, start_time, focus FROM workouts").fetchall() == [("2026-11-01", None, None)]
+    con.close()

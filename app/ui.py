@@ -205,7 +205,8 @@ SILHOUETTE = ('<circle cx="100" cy="36" r="19"/><rect x="92" y="54" width="16" h
               '<ellipse cx="84" cy="372" rx="11" ry="6"/><ellipse cx="116" cy="372" rx="11" ry="6"/>')
 
 
-def _figure(groups: dict, share: dict, days: dict, label: str) -> str:
+def _figure(groups: dict, share: dict, days: dict, label: str, max_width: int = 230, tips: dict | None = None,
+            caption: bool = True) -> str:
     top = max([v for v in share.values() if v] or [1])
     parts = []
     for muscle, shapes in groups.items():
@@ -219,14 +220,18 @@ def _figure(groups: dict, share: dict, days: dict, label: str) -> str:
             fill = f'fill="{RED}" fill-opacity="{opacity:.2f}" stroke="{RED}" stroke-opacity=".9"'
         else:
             fill = 'fill="#2A2A31" stroke="#3A3A43"'
-        d = days.get(name)
-        when = "not trained in this period" if d is None else f"last trained {d} day{'s' if d != 1 else ''} ago"
-        tip = html.escape(f"{name}: {v:.1f}% of volume, {when}")
-        parts.append(f'<g {fill} stroke-width="1.2"><title>{tip}</title>{"".join(shapes)}</g>')
-    return (f'<svg viewBox="0 0 200 400" width="100%" style="max-width:230px" role="img" aria-label="{label} muscle map">'
-            f'<g fill="#18181D" stroke="#2E2E36" stroke-width="1.2">{SILHOUETTE}</g>{"".join(parts)}'
-            f'<text x="100" y="396" text-anchor="middle" fill="{MUTED}" font-size="12" letter-spacing="3" '
-            f'font-family="Oswald, Impact, sans-serif">{label.upper()}</text></svg>')
+        if tips is not None:
+            tip = tips.get(name, name)
+        else:
+            d = days.get(name)
+            when = "not trained in this period" if d is None else f"last trained {d} day{'s' if d != 1 else ''} ago"
+            tip = f"{name}: {v:.1f}% of volume, {when}"
+        parts.append(f'<g {fill} stroke-width="1.2"><title>{html.escape(tip)}</title>{"".join(shapes)}</g>')
+    label_svg = (f'<text x="100" y="396" text-anchor="middle" fill="{MUTED}" font-size="12" letter-spacing="3" '
+                 f'font-family="Oswald, Impact, sans-serif">{label.upper()}</text>') if caption else ""
+    return (f'<svg viewBox="0 0 200 400" width="100%" style="max-width:{max_width}px" role="img" '
+            f'aria-label="{label} muscle map"><g fill="#18181D" stroke="#2E2E36" stroke-width="1.2">{SILHOUETTE}</g>'
+            f'{"".join(parts)}{label_svg}</svg>')
 
 
 def body_map(share: dict, days: dict) -> str:
@@ -236,3 +241,36 @@ def body_map(share: dict, days: dict) -> str:
             f'<div class="gc-legend"><span>less</span><span class="grad"></span><span>more volume</span>'
             f'<span style="display:inline-block;width:12px;height:8px;border-radius:2px;background:#2A2A31;margin-left:10px;">'
             f'</span><span>not trained</span></div></div>')
+
+
+# ---------------- exercise cards ----------------
+DRAWN_MUSCLES = {"calves" if m == "calves_back" else m for m in [*FRONT, *BACK]}
+# The day's focus, as people say it, mapped to the muscle names of free-exercise-db
+FOCUS_GROUPS = {"chest": ["chest"], "back": ["lats", "middle back", "lower back", "traps"],
+                "shoulders": ["shoulders"], "arms": ["biceps", "triceps", "forearms"],
+                "legs": ["quadriceps", "hamstrings", "glutes", "calves", "adductors", "abductors"],
+                "core": ["abdominals"]}
+
+
+def _muscles(text: str) -> list[str]:
+    return [m for m in (text or "").split("; ") if m]
+
+
+def exercise_card(name: str, primary: str, secondary: str, equipment: str, level: str, category: str,
+                  last_time: str) -> str:
+    """One exercise: a small front and back map (main muscles bright red, helpers lighter) and its details."""
+    main, helpers = _muscles(primary), _muscles(secondary)
+    share = {m: (100 if m in main else 40 if m in helpers else 0) for m in DRAWN_MUSCLES}
+    tips = {m: f"{m}: {'main muscle' if m in main else 'helper muscle' if m in helpers else 'not used'}"
+            for m in DRAWN_MUSCLES}
+    maps = (_figure(FRONT, share, {}, "Front", 64, tips, caption=False)
+            + _figure(BACK, share, {}, "Back", 64, tips, caption=False))
+    chips = ("".join(f'<span class="gc-chip red">{html.escape(m)}</span>' for m in main)
+             + "".join(f'<span class="gc-chip">{html.escape(m)}</span>' for m in helpers))
+    meta = " · ".join(html.escape(x) for x in [equipment, level, category] if x)
+    return (f'<div class="gc-panel" style="display:flex;gap:14px;align-items:center;margin-bottom:12px;">'
+            f'<div style="display:flex;gap:2px;flex:none;width:132px;">{maps}</div>'
+            f'<div style="min-width:0;"><div style="font-weight:600;color:{TEXT};text-transform:capitalize;'
+            f'margin-bottom:6px;">{html.escape(name)}</div><div style="margin-bottom:6px;">{chips}</div>'
+            f'<div class="gc-muted" style="text-transform:capitalize;">{meta}</div>'
+            f'<div class="gc-muted" style="margin-top:4px;">{html.escape(last_time)}</div></div></div>')
