@@ -7,10 +7,15 @@ scikit-learn==1.9.0
 matplotlib==3.11.1
 joblib==1.6.0
 
-# --- Backend (serves the trained model) ---
+# --- Backend (API and database) ---
 fastapi==0.115.11
 uvicorn==0.34.3
 pydantic==2.10.6
+SQLAlchemy==2.0.32
+httpx==0.28.1
+
+# --- Frontend ---
+streamlit==1.65.0
 
 # --- Notebooks & tests ---
 notebook==7.6.2

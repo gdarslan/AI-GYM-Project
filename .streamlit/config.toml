@@ -1,0 +1,7 @@
+# Streamlit settings for this project.
+[server]
+# Don't ask for an e-mail address on first start (it blocks the terminal); start_app.bat opens the browser instead.
+headless = true
+
+[browser]
+gatherUsageStats = false

@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 ROOT = Path(__file__).resolve().parents[1]
 EXERCISES_CSV = ROOT / "data" / "processed" / "free_exercise_db.csv"
@@ -69,8 +70,10 @@ class WorkoutSet(Base):
     exercise: Mapped[Exercise] = relationship()
 
 
-def make_engine(url: str = DB_URL, **kwargs):
-    return create_engine(url, connect_args={"check_same_thread": False}, **kwargs)
+def make_engine(url: str = DB_URL):
+    if url == "sqlite://":       # in-memory (tests): one shared connection, or each request sees an empty db
+        return create_engine(url, connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    return create_engine(url, connect_args={"check_same_thread": False})
 
 
 def init_db(engine, exercises_csv: Path = EXERCISES_CSV) -> None:

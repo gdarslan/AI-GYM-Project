@@ -1,24 +1,31 @@
-"""Gym Coach API. Run from the project root:  uvicorn app.main:app --reload
+"""Gym Coach API. Run from the project root:  python -m uvicorn app.main:app --reload
 
 Interactive docs: http://localhost:8000/docs
 """
+from contextlib import asynccontextmanager
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Request
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.db import DB_URL, Exercise, User, Workout, WorkoutSet, init_db, make_engine
+from app.db import DB_URL, EXERCISES_CSV, Exercise, User, Workout, WorkoutSet, init_db, make_engine
 from app.schemas import ExerciseOut, SetOut, UserIn, UserOut, WorkoutIn, WorkoutOut
 from src.personas import PERSONAS
 from src.progress import progress_summary
 
 
-def create_app(db_url: str = DB_URL, engine=None) -> FastAPI:
-    engine = engine or make_engine(db_url)
-    init_db(engine)
-    api = FastAPI(title="AI Gym Coach")
+def create_app(db_url: str = DB_URL, exercises_csv: Path = EXERCISES_CSV) -> FastAPI:
+    engine = make_engine(db_url)
+
+    @asynccontextmanager
+    async def lifespan(_):
+        init_db(engine, exercises_csv)     # tables + exercise library, on startup
+        yield
+
+    api = FastAPI(title="AI Gym Coach", lifespan=lifespan)
     api.state.Session = sessionmaker(engine)
     add_routes(api)
     return api

@@ -9,6 +9,9 @@ data/raw/*
 data/processed/*
 !data/processed/.gitkeep
 
+# App database: holds users' workout data, never committed
+data/*.db
+
 # --- Secrets ---
 .env
 .env.*
