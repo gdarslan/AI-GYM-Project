@@ -13,6 +13,7 @@ questions. A separate experiment tests whether a trained model predicts calories
 | `app/security.py` | Password hashing (PBKDF2), password rules and session tokens |
 | `app/schemas.py` | Input validation (impossible values are rejected) |
 | `app/streamlit_app.py` | The screens: login, progress, log workout, history, coach, profile, privacy, admin |
+| `app/ui.py`, `app/assets/` | The look: red-and-black theme, logo, banner and the muscle body map (all drawn as SVG) |
 | `app/create_admin.py` | Command to create the first admin |
 | `src/progress.py` | Progress calculations (plain code, no AI): volume, neglected muscles, recovery, strength |
 | `src/coach.py` | The AI coach: builds the context, calls the local model (Ollama), logs every answer |

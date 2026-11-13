@@ -9,11 +9,14 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import altair as alt
 import httpx
 import pandas as pd
 import streamlit as st
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from app import ui  # noqa: E402
 from src.progress import neglected_muscles  # noqa: E402
 
 API = os.environ.get("GYM_API_URL", "http://localhost:8000")
@@ -46,7 +49,9 @@ account and everything in it. Withdrawing consent for your training data means d
 15 minutes after 5 wrong passwords, and the app can only be opened from this computer.
 """
 
-st.set_page_config(page_title="AI Gym Coach", page_icon="🏋️", layout="wide")
+st.set_page_config(page_title="AI Gym Coach", page_icon=":material/fitness_center:", layout="wide",
+                   initial_sidebar_state="expanded" if "token" in st.session_state else "collapsed")
+ui.apply_theme()
 
 
 def log_out_locally(message: str | None = None):
@@ -89,12 +94,36 @@ def signed_in(result):
     st.rerun()
 
 
+def red_bars(df: pd.DataFrame, x: str, y: str, color: str | None = None, height: int = 320):
+    """A horizontal bar chart in the app's colours."""
+    enc = {"x": alt.X(f"{x}:Q", title=None, axis=alt.Axis(grid=True, gridColor=ui.BORDER, labelColor=ui.MUTED)),
+           "y": alt.Y(f"{y}:N", sort="-x", title=None, axis=alt.Axis(labelColor=ui.TEXT, labelFontSize=12)),
+           "tooltip": [y, alt.Tooltip(f"{x}:Q", format=".1f")] + ([color] if color else [])}
+    if color:
+        enc["color"] = alt.Color(f"{color}:N", title=None, scale=alt.Scale(range=[ui.RED, "#52525B"]),
+                                 legend=alt.Legend(orient="top", labelColor=ui.MUTED))
+        enc["yOffset"] = alt.YOffset(f"{color}:N")
+    else:
+        enc["color"] = alt.value(ui.RED)
+    chart = alt.Chart(df).mark_bar(cornerRadiusEnd=4, height=9 if color else 14).encode(**enc)
+    st.altair_chart(chart.properties(height=height, background="transparent").configure_view(strokeWidth=0),
+                    width="stretch")
+
+
 # ---------------- login screen ----------------
 def login_screen():
-    _, middle, _ = st.columns([1, 2, 1])
-    with middle:
-        st.title("🏋️ AI Gym Coach")
-        st.caption("Log your workouts, see your progress, and ask an AI coach about your own training.")
+    st.markdown(ui.hero("TRAIN SMARTER.", "Log your workouts, see your progress,", "and ask an AI coach about your training."),
+                unsafe_allow_html=True)
+    st.write("")
+    left, right = st.columns([5, 6], gap="large")
+    with left:
+        st.markdown(
+            ui.feature("1", "Log every set", "876 exercises, your last session shown, personal bests celebrated.")
+            + ui.feature("2", "See what you are missing", "A muscle map and warnings for muscle groups you skip.")
+            + ui.feature("3", "Ask your coach", "An AI that explains your own numbers. It runs on this computer.")
+            + ui.feature("4", "Your data stays yours", "No name or e-mail needed. Download or delete everything."),
+            unsafe_allow_html=True)
+    with right:
         if "flash" in st.session_state:
             st.info(st.session_state.pop("flash"))
         login_tab, register_tab, demo_tab = st.tabs(["Log in", "Create account", "Try the demo"])
@@ -143,9 +172,11 @@ def login_screen():
                             signed_in(result)
 
         with demo_tab:
-            st.write("A temporary account with 4 weeks of made-up training: legs skipped for the last two weeks, "
-                     "bench press going up, shoulder press stuck. It is deleted when you log out.")
-            if st.button("Start the demo", type="primary", width="stretch"):
+            st.markdown('<div class="gc-panel">A temporary account with four weeks of made-up training: legs '
+                        'skipped for the last two weeks, bench press going up, shoulder press stuck. Everything is '
+                        'deleted when you log out.</div>', unsafe_allow_html=True)
+            st.write("")
+            if st.button("Start the demo", type="primary", width="stretch", icon=":material/play_arrow:"):
                 result = api("POST", "/auth/demo")
                 if result:
                     signed_in(result)
@@ -163,26 +194,232 @@ if not me:
     st.stop()
 st.session_state.me = me
 
-# ---------------- sidebar ----------------
-st.sidebar.title("🏋️ AI Gym Coach")
-badge = " · admin" if me["role"] == "admin" else ""
-st.sidebar.markdown(f"Signed in as **{me['username']}**{badge}")
-if me["is_demo"]:
-    st.sidebar.caption("Demo account: deleted when you log out.")
-pages = (["Progress", "Log workout", "History", "Coach", "Profile"] if me["goal"] else []) + ["Privacy & account"]
-if me["role"] == "admin":
-    pages.append("Admin")
-page = st.sidebar.radio("Go to", pages, key="page")
-if st.sidebar.button("Log out", width="stretch"):
-    api("POST", "/auth/logout")
-    log_out_locally("You are logged out.")
-    st.rerun()
-
 
 # ---------------- pages ----------------
+TREND_LABEL = {"improving": "↑ Improving", "stalled": "→ Stalled",
+               "not done recently": "· Not done recently", "too little data": "· Too little data"}
+
+
+def progress_page():
+    ui.page_header("Your progress", f"Welcome back, {me['username']}. Goal: {me['goal']}.")
+    weeks = st.segmented_control("Period", [4, 8, 12], default=4, format_func=lambda w: f"Last {w} weeks",
+                                 label_visibility="collapsed") or 4
+    p = api("GET", "/me/progress", params={"weeks": weeks})
+    if not p or p["workouts"] == 0:
+        st.info("No workouts in this period yet. Log your first one to see your progress here.")
+        return
+    days = p["days_since_last_trained"]
+    gaps = neglected_muscles(p)
+    trends = p["strength_trends"]
+    improving = sum(t["trend"] == "improving" for t in trends.values())
+    ui.cards([("Workouts", p["workouts"], f"in the last {weeks} weeks", False),
+              ("Per week", p["workouts_per_week"], "average sessions", False),
+              ("Lifts improving", f"{improving}/{len(trends)}", "estimated 1-rep max", False),
+              ("Muscles to train", len(gaps), "not trained for 10+ days", bool(gaps))])
+    if gaps:
+        ui.alert("<b>Not trained for 10+ days:</b> " + ", ".join(
+            f"{m} ({days[m]} days)" if days[m] is not None else f"{m} (not in this period)" for m in gaps))
+
+    left, right = st.columns([5, 4], gap="large")
+    with left:
+        ui.section("Muscle map")
+        recent = st.toggle("Last 2 weeks only", value=True)
+        share = p["volume_share_pct_last_2_weeks"] if recent else p["volume_share_pct"]
+        st.markdown(ui.body_map(share, days), unsafe_allow_html=True)
+        st.caption("Volume = reps × weight. The main muscle of an exercise counts fully, helper muscles half. "
+                   "Hover a muscle for its numbers.")
+    with right:
+        ui.section("Recovery")
+        rec = p["recovery_guideline"]
+        ready = sorted(m for m, s in rec.items() if s == "ready")
+        recovering = sorted(m for m, s in rec.items() if s == "recovering")
+        st.markdown("".join(f'<span class="gc-chip red">{m}</span>' for m in recovering)
+                    + ("<br><br>" if recovering else "")
+                    + "".join(f'<span class="gc-chip">{m}</span>' for m in ready), unsafe_allow_html=True)
+        st.caption("Red: trained less than 48 hours ago, still recovering. Grey: ready. A general guideline, "
+                   "not a prediction.")
+        ui.section("Volume per muscle group")
+        vol = pd.DataFrame([{"muscle": m, "share": v, "period": f"Last {weeks} weeks"}
+                            for m, v in p["volume_share_pct"].items()]
+                           + [{"muscle": m, "share": v, "period": "Last 2 weeks"}
+                              for m, v in p["volume_share_pct_last_2_weeks"].items()])
+        red_bars(vol[vol["share"] > 0], "share", "muscle", color="period", height=330)
+
+    ui.section("Strength per exercise")
+    table = pd.DataFrame(trends).T
+    if not table.empty:
+        table = table.assign(trend=table["trend"].map(TREND_LABEL))
+        st.dataframe(table, width="stretch", column_config={
+            "est_1rm_first_week_kg": st.column_config.NumberColumn("First (kg)", format="%.1f"),
+            "est_1rm_last_week_kg": st.column_config.NumberColumn("Latest (kg)", format="%.1f"),
+            "change_pct": st.column_config.NumberColumn("Change", format="%.1f%%"),
+            "last_done_days_ago": st.column_config.NumberColumn("Last done", format="%d days ago"),
+            "trend": "Trend"})
+        workouts = api("GET", "/me/workouts") or []
+        ids = {s["exercise"]: s["exercise_id"] for w in workouts for s in w["sets"]}
+        exercise = st.selectbox("Progress over time", list(table.index))
+        history = api("GET", f"/me/exercise-history/{ids[exercise]}") or []
+        if history:
+            df = pd.DataFrame(history)
+            line = alt.Chart(df).mark_line(color=ui.RED, strokeWidth=3, point=alt.OverlayMarkDef(
+                color=ui.RED, size=70, filled=True)).encode(
+                x=alt.X("date:T", title=None, axis=alt.Axis(labelColor=ui.MUTED, gridColor=ui.BORDER, format="%d %b")),
+                y=alt.Y("best_est_1rm_kg:Q", title="Estimated 1-rep max (kg)", scale=alt.Scale(zero=False),
+                        axis=alt.Axis(labelColor=ui.MUTED, titleColor=ui.MUTED, gridColor=ui.BORDER)),
+                tooltip=["date:T", alt.Tooltip("best_est_1rm_kg:Q", title="kg")])
+            st.altair_chart(line.properties(height=260, background="transparent").configure_view(strokeWidth=0),
+                            width="stretch")
+
+
+def last_session_text(exercise_id):
+    history = api("GET", f"/me/exercise-history/{exercise_id}") or []
+    if not history:
+        return "First time logging this exercise."
+    last = history[-1]
+    sets = ", ".join(f"{s['reps']}×{s['weight_kg']:g} kg" for s in last["sets"])
+    return f"Last time ({last['date']}): {sets}"
+
+
+def log_workout_page():
+    ui.page_header("Log a workout", "Add your sets, then save. Your progress updates straight away.")
+    pending = st.session_state.setdefault("pending_sets", [])
+    saved = st.session_state.pop("last_saved", None)
+    if saved:
+        kcal = f" · about {saved['estimated_kcal']} kcal" if saved["estimated_kcal"] else ""
+        st.success(f"Workout saved: {saved['total_volume_kg']:,.0f} kg total volume{kcal}.")
+        for ex in saved["new_records"]:
+            st.success(f"New personal best: {ex}", icon=":material/emoji_events:")
+
+    a, b, c = st.columns(3)
+    day = a.date_input("Date", date.today(), max_value=date.today())
+    duration = b.number_input("Duration (min)", 1, 300, 60)
+    rpe = c.slider("How hard was it? (RPE 1–10)", 1, 10, 7)
+
+    workouts = api("GET", "/me/workouts") or []
+    if workouts and not pending and st.button(f"Repeat last workout ({workouts[0]['date']})",
+                                              icon=":material/replay:"):
+        pending += [{k: s[k] for k in ("exercise_id", "exercise", "reps", "weight_kg")} for s in workouts[0]["sets"]]
+        st.rerun()
+
+    ui.section("Add sets")
+    search = st.text_input("Search exercise or muscle", placeholder="e.g. bench, squat, biceps")
+    found = (api("GET", "/exercises", params={"search": search, "limit": 30}) or []) if search.strip() else []
+    if not search.strip():
+        st.caption("Type a name or a muscle to search the 876 exercises.")
+    elif found:
+        ex = st.selectbox("Exercise", found, format_func=lambda e: f"{e['name']}  —  {e['primary_muscles']}")
+        st.caption(last_session_text(ex["id"]))
+        a, b, c, d = st.columns(4)
+        n_sets = a.number_input("Sets", 1, 10, 3)
+        reps = b.number_input("Reps", 1, 100, 8)
+        kg = c.number_input("Weight (kg, 0 = bodyweight)", 0.0, 500.0, 20.0, step=2.5)
+        d.write("")
+        if d.button("Add", width="stretch", icon=":material/add:"):
+            pending += [{"exercise_id": ex["id"], "exercise": ex["name"], "reps": reps, "weight_kg": kg}
+                        for _ in range(n_sets)]
+            st.rerun()
+    elif search:
+        st.info("No exercise found. Try a shorter word.")
+
+    if pending:
+        ui.section(f"This workout · {len(pending)} sets")
+        st.dataframe(pd.DataFrame(pending)[["exercise", "reps", "weight_kg"]], width="stretch", hide_index=True)
+        a, b, c = st.columns(3)
+        if a.button("Remove last set", icon=":material/undo:", width="stretch"):
+            pending.pop()
+            st.rerun()
+        if b.button("Clear all", icon=":material/delete:", width="stretch"):
+            pending.clear()
+            st.rerun()
+        if c.button("Save workout", type="primary", icon=":material/save:", width="stretch"):
+            body = {"date": str(day), "duration_min": duration, "rpe": rpe,
+                    "sets": [{k: s[k] for k in ("exercise_id", "reps", "weight_kg")} for s in pending]}
+            result = api("POST", "/me/workouts", json=body)
+            if result:
+                st.session_state.pending_sets = []
+                st.session_state.last_saved = result
+                st.rerun()
+
+
+def history_page():
+    ui.page_header("Workout history", "Every session you logged. Calories are MET-formula estimates.")
+    workouts = api("GET", "/me/workouts") or []
+    if not workouts:
+        st.info("No workouts yet. Log your first one on the Log workout page.")
+        return
+    total_volume = sum(w["total_volume_kg"] for w in workouts)
+    total_kcal = sum(w["estimated_kcal"] or 0 for w in workouts)
+    ui.cards([("Sessions", len(workouts), "logged in total", False),
+              ("Total volume", f"{total_volume / 1000:,.1f} t", "reps × weight", False),
+              ("Calories", f"≈{total_kcal:,}", "estimated with the MET formula", False)])
+    for w in workouts:
+        sets = pd.DataFrame(w["sets"])
+        summary = (sets.groupby("exercise", sort=False)
+                   .agg(sets=("reps", "size"), reps=("reps", "first"), weight_kg=("weight_kg", "max")))
+        kcal = f" · ≈{w['estimated_kcal']} kcal" if w["estimated_kcal"] else ""
+        title = (f"{w['date']} · {len(summary)} exercises · {w['total_volume_kg']:,.0f} kg · "
+                 f"{w['duration_min'] or '?'} min · RPE {w['rpe'] or '?'}{kcal}")
+        with st.expander(title, icon=":material/fitness_center:"):
+            st.dataframe(summary, width="stretch")
+            if st.button("Delete workout", key=f"del{w['id']}", icon=":material/delete:"):
+                api("DELETE", f"/me/workouts/{w['id']}")
+                st.rerun()
+
+
+def coach_page():
+    ui.page_header("Coach", "Ask about your own training. The app calculates; the AI explains.")
+    if not me["consent_ai_coach"]:
+        st.info("The AI coach is switched off for your account, so none of your data is given to the model.")
+        if st.button("Switch the AI coach on", type="primary", icon=":material/smart_toy:"):
+            if api("PUT", "/me/consent", json={"ai_coach": True}):
+                st.rerun()
+        return
+    chat = st.session_state.setdefault("chat", [])
+    avatars = {"user": ":material/person:", "assistant": ":material/fitness_center:"}
+
+    if not chat:
+        st.markdown('<div class="gc-panel">Your coach reads the progress numbers the app calculated for you: '
+                    'neglected muscles, strength trends and recovery. It runs on this computer and does not give '
+                    'medical advice. Pick a question or type your own.</div>', unsafe_allow_html=True)
+        st.write("")
+    for turn in chat:
+        with st.chat_message(turn["role"], avatar=avatars[turn["role"]]):
+            st.markdown(turn["content"])
+
+    question = st.chat_input("Ask your coach…")
+    if not chat:
+        for row in (SUGGESTED_QUESTIONS[:2], SUGGESTED_QUESTIONS[2:]):
+            for col, q in zip(st.columns(2), row):
+                if col.button(q, width="stretch", icon=":material/chat_bubble:"):
+                    question = q
+
+    if question:
+        with st.chat_message("user", avatar=avatars["user"]):
+            st.markdown(question)
+        with st.chat_message("assistant", avatar=avatars["assistant"]), \
+                st.spinner("Thinking… (the first answer can take a while)"):
+            reply = api("POST", "/me/coach", timeout=300,
+                        json={"question": question, "history": [{"role": t["role"], "content": t["content"]}
+                                                                for t in chat]})
+        if reply:
+            chat += [{"role": "user", "content": question}, {"role": "assistant", "content": reply["answer"]}]
+            st.session_state.coach_meta = reply
+            st.rerun()
+
+    meta = st.session_state.get("coach_meta")
+    if chat and st.button("New conversation", icon=":material/refresh:"):
+        chat.clear()
+        st.rerun()
+    if meta:
+        with st.expander("What the coach sees", icon=":material/visibility:"):
+            st.caption(f"Model: {meta['model']} · prompt {meta['prompt_version']}. "
+                       "No username, age, height, weight or gender is sent.")
+            st.json(meta["context"], expanded=False)
+    st.caption("The coach can make mistakes. For pain or injuries, see a doctor or physiotherapist.")
+
+
 def profile_page():
-    st.header("Training profile")
-    st.caption("Used for your calorie estimates; your goal and experience level are also given to the coach.")
+    ui.page_header("Training profile", "Used for your calorie estimates; your goal and level also guide the coach.")
     with st.form("profile"):
         a, b = st.columns(2)
         age = a.number_input("Age", 16, 100, int(me["age"]))
@@ -198,31 +435,34 @@ def profile_page():
 
 
 def privacy_page():
-    st.header("Privacy & account")
-    with st.expander("Privacy notice", expanded=False):
+    ui.page_header("Privacy & account", "Your consent, your data and your password.")
+    with st.expander("Privacy notice", icon=":material/policy:"):
         st.markdown(PRIVACY_NOTICE)
 
     if me["goal"]:
-        st.subheader("Consent")
+        ui.section("Consent")
         given = (me["consent_health_at"] or "")[:10]
-        st.write(f"Training data: consent given on {given} (privacy notice version {me['consent_version']}). "
-                 "To withdraw it, delete your account below.")
+        st.markdown(f'<div class="gc-panel">Training data: consent given on <b>{given}</b> (privacy notice version '
+                    f'{me["consent_version"]}). To withdraw it, delete your account below.</div>',
+                    unsafe_allow_html=True)
+        st.write("")
         coach_on = st.toggle("Use the AI coach", value=me["consent_ai_coach"],
                              help="When off, the coach is disabled and none of your data is given to the model.")
         if coach_on != me["consent_ai_coach"]:
             if api("PUT", "/me/consent", json={"ai_coach": coach_on}):
                 st.rerun()
 
-    a, b = st.columns(2)
+    a, b = st.columns(2, gap="large")
     with a:
-        st.subheader("Your data")
+        ui.section("Your data")
+        st.caption("Everything the app stores about you, as a JSON file (your right of access).")
         export = api("GET", "/me/export")
         if export:
-            st.download_button("Download all my data (JSON)", json.dumps(export, indent=2),
+            st.download_button("Download all my data", json.dumps(export, indent=2), icon=":material/download:",
                                file_name=f"gym_coach_{me['username']}.json", mime="application/json")
     with b:
         if not me["is_demo"]:
-            st.subheader("Change password")
+            ui.section("Change password")
             with st.form("password", clear_on_submit=True):
                 current = st.text_input("Current password", type="password")
                 new = st.text_input("New password", type="password")
@@ -234,7 +474,7 @@ def privacy_page():
                         st.success("Password changed. Other devices have been signed out.")
 
     if not me["is_demo"]:
-        st.subheader("Delete account")
+        ui.section("Delete account")
         with st.form("delete"):
             st.write("This permanently removes your account and every workout you logged. It cannot be undone.")
             password = st.text_input("Type your password to confirm", type="password")
@@ -244,209 +484,18 @@ def privacy_page():
                     st.rerun()
 
 
-def last_session_text(exercise_id):
-    history = api("GET", f"/me/exercise-history/{exercise_id}") or []
-    if not history:
-        return "First time logging this exercise."
-    last = history[-1]
-    sets = ", ".join(f"{s['reps']}×{s['weight_kg']:g} kg" for s in last["sets"])
-    return f"Last time ({last['date']}): {sets}"
-
-
-def log_workout_page():
-    st.header("Log a workout")
-    pending = st.session_state.setdefault("pending_sets", [])
-    a, b, c = st.columns(3)
-    day = a.date_input("Date", date.today(), max_value=date.today())
-    duration = b.number_input("Duration (min)", 1, 300, 60)
-    rpe = c.slider("How hard was it? (RPE 1–10)", 1, 10, 7)
-
-    workouts = api("GET", "/me/workouts") or []
-    if workouts and not pending and st.button(f"Repeat last workout ({workouts[0]['date']})"):
-        pending += [{k: s[k] for k in ("exercise_id", "exercise", "reps", "weight_kg")} for s in workouts[0]["sets"]]
-        st.rerun()
-
-    st.subheader("Add sets")
-    search = st.text_input("Search exercise or muscle", placeholder="e.g. bench, squat, biceps")
-    found = api("GET", "/exercises", params={"search": search, "limit": 30}) or []
-    if found:
-        ex = st.selectbox("Exercise", found, format_func=lambda e: f"{e['name']}  —  {e['primary_muscles']}")
-        st.caption(last_session_text(ex["id"]))
-        a, b, c, d = st.columns(4)
-        n_sets = a.number_input("Sets", 1, 10, 3)
-        reps = b.number_input("Reps", 1, 100, 8)
-        kg = c.number_input("Weight (kg, 0 = bodyweight)", 0.0, 500.0, 20.0, step=2.5)
-        d.write("")
-        if d.button("Add", width="stretch"):
-            pending += [{"exercise_id": ex["id"], "exercise": ex["name"], "reps": reps, "weight_kg": kg}
-                        for _ in range(n_sets)]
-            st.rerun()
-    elif search:
-        st.info("No exercise found. Try a shorter word.")
-
-    if pending:
-        st.dataframe(pd.DataFrame(pending)[["exercise", "reps", "weight_kg"]], width="stretch")
-        a, b, c = st.columns(3)
-        if a.button("Remove last set"):
-            pending.pop()
-            st.rerun()
-        if b.button("Clear all"):
-            pending.clear()
-            st.rerun()
-        if c.button("Save workout", type="primary"):
-            body = {"date": str(day), "duration_min": duration, "rpe": rpe,
-                    "sets": [{k: s[k] for k in ("exercise_id", "reps", "weight_kg")} for s in pending]}
-            saved = api("POST", "/me/workouts", json=body)
-            if saved:
-                st.session_state.pending_sets = []
-                st.session_state.last_saved = saved
-                st.rerun()
-    saved = st.session_state.pop("last_saved", None)
-    if saved:
-        kcal = f", about {saved['estimated_kcal']} kcal" if saved["estimated_kcal"] else ""
-        st.success(f"Workout saved: {saved['total_volume_kg']:,.0f} kg total volume{kcal}.")
-        for ex in saved["new_records"]:
-            st.success(f"🏆 New personal best: {ex}")
-
-
-def history_page():
-    st.header("Workout history")
-    workouts = api("GET", "/me/workouts") or []
-    if not workouts:
-        st.info("No workouts yet. Log your first one on the Log workout page.")
-        return
-    st.caption("Calories are estimated with the MET formula (MET × body weight × hours), using your RPE to pick "
-               "the MET value. They are estimates, not measurements.")
-    for w in workouts:
-        sets = pd.DataFrame(w["sets"])
-        summary = (sets.groupby("exercise", sort=False)
-                   .agg(sets=("reps", "size"), reps=("reps", "first"), weight_kg=("weight_kg", "max")))
-        kcal = f" · ≈{w['estimated_kcal']} kcal" if w["estimated_kcal"] else ""
-        title = (f"{w['date']} · {len(summary)} exercises · {w['total_volume_kg']:,.0f} kg volume · "
-                 f"{w['duration_min'] or '?'} min · RPE {w['rpe'] or '?'}{kcal}")
-        with st.expander(title):
-            st.dataframe(summary, width="stretch")
-            if st.button("Delete workout", key=f"del{w['id']}"):
-                api("DELETE", f"/me/workouts/{w['id']}")
-                st.rerun()
-
-
-TREND_ICON = {"improving": "↑ improving", "stalled": "→ stalled",
-              "not done recently": "· not done recently", "too little data": "· too little data"}
-
-
-def progress_page():
-    st.header("Your progress")
-    weeks = st.radio("Period", [4, 8, 12], horizontal=True, format_func=lambda w: f"Last {w} weeks")
-    p = api("GET", "/me/progress", params={"weeks": weeks})
-    if not p or p["workouts"] == 0:
-        st.info("No workouts in this period yet.")
-        return
-    a, b, c = st.columns(3)
-    a.metric("Workouts", p["workouts"])
-    b.metric("Per week", p["workouts_per_week"])
-    improving = sum(t["trend"] == "improving" for t in p["strength_trends"].values())
-    c.metric("Lifts improving", f"{improving} of {len(p['strength_trends'])}")
-
-    days = p["days_since_last_trained"]
-    gaps = neglected_muscles(p)
-    if gaps:
-        st.warning("**Not trained for 10+ days:** " + ", ".join(
-            f"{m} ({days[m]} days)" if days[m] is not None else f"{m} (not in this period)" for m in gaps))
-
-    left, right = st.columns([3, 2])
-    with left:
-        st.subheader("Share of training volume per muscle group")
-        vol = pd.DataFrame({f"Last {weeks} weeks": p["volume_share_pct"],
-                            "Last 2 weeks": p["volume_share_pct_last_2_weeks"]})
-        st.bar_chart(vol, horizontal=True, stack=False, y_label="% of volume")
-        st.caption("Volume = reps × weight. The main muscle of an exercise counts fully, helper muscles count half.")
-    with right:
-        st.subheader("Recovery")
-        rec = pd.DataFrame({"days since trained": {m: d for m, d in days.items() if d is not None},
-                            "status": p["recovery_guideline"]})
-        rec["status"] = rec["status"].map({"ready": "✅ ready", "recovering": "⏳ recovering"})
-        st.dataframe(rec.sort_values("days since trained"), width="stretch")
-        st.caption("Guideline: about 48 hours of rest per muscle group. A general rule, not a prediction.")
-
-    st.subheader("Strength per exercise")
-    st.caption("Estimated 1-rep max (Epley formula), first vs. last week the exercise was done.")
-    trends = pd.DataFrame(p["strength_trends"]).T
-    if not trends.empty:
-        shown = trends.assign(trend=trends["trend"].map(TREND_ICON)).rename(columns={
-            "est_1rm_first_week_kg": "first (kg)", "est_1rm_last_week_kg": "latest (kg)",
-            "change_pct": "change %", "last_done_days_ago": "last done (days ago)"})
-        st.dataframe(shown, width="stretch")
-
-        workouts = api("GET", "/me/workouts") or []
-        ids = {s["exercise"]: s["exercise_id"] for w in workouts for s in w["sets"]}
-        exercise = st.selectbox("Show progress over time for", list(trends.index))
-        history = api("GET", f"/me/exercise-history/{ids[exercise]}") or []
-        if history:
-            chart = pd.DataFrame(history).set_index("date")[["best_est_1rm_kg"]]
-            st.line_chart(chart.rename(columns={"best_est_1rm_kg": "estimated 1-rep max (kg)"}))
-
-
-def coach_page():
-    st.header("Coach")
-    if not me["consent_ai_coach"]:
-        st.info("The AI coach is switched off for your account, so none of your data is given to the model.")
-        if st.button("Switch the AI coach on", type="primary"):
-            if api("PUT", "/me/consent", json={"ai_coach": True}):
-                st.rerun()
-        return
-    st.caption("Ask about your own training. The app calculates your progress; the AI explains it. "
-               "The coach can make mistakes and does not give medical advice.")
-    chat = st.session_state.setdefault("chat", [])
-
-    for turn in chat:
-        with st.chat_message(turn["role"]):
-            st.markdown(turn["content"])
-
-    question = st.chat_input("Ask your coach…")
-    if not chat:
-        cols = st.columns(len(SUGGESTED_QUESTIONS))
-        for col, q in zip(cols, SUGGESTED_QUESTIONS):
-            if col.button(q, width="stretch"):
-                question = q
-
-    if question:
-        with st.chat_message("user"):
-            st.markdown(question)
-        with st.chat_message("assistant"), st.spinner("Thinking… (the first answer can take a while)"):
-            reply = api("POST", "/me/coach", timeout=300,
-                        json={"question": question, "history": [{"role": t["role"], "content": t["content"]}
-                                                                for t in chat]})
-        if reply:
-            chat += [{"role": "user", "content": question}, {"role": "assistant", "content": reply["answer"]}]
-            st.session_state.coach_meta = reply
-            st.rerun()
-
-    meta = st.session_state.get("coach_meta")
-    if chat and st.button("New conversation"):
-        chat.clear()
-        st.rerun()
-    if meta:
-        with st.expander("What the coach sees"):
-            st.caption(f"Model: {meta['model']} · prompt {meta['prompt_version']}. "
-                       "No username, age, height, weight or gender is sent.")
-            st.json(meta["context"], expanded=False)
-
-
 def admin_page():
-    st.header("Admin")
-    st.caption("Admins manage accounts. They cannot see anyone's workouts or body data.")
+    ui.page_header("Admin", "Manage accounts. Admins cannot see anyone's workouts or body data.")
     stats = api("GET", "/admin/stats")
     if stats:
-        cols = st.columns(len(stats))
-        for col, (name, value) in zip(cols, stats.items()):
-            col.metric(name.replace("_", " ").capitalize(), value)
+        ui.cards([(name.replace("_", " ").capitalize(), value, "", name == "active_sessions")
+                  for name, value in stats.items()])
 
     users = api("GET", "/admin/users") or []
-    st.subheader("Accounts")
+    ui.section("Accounts")
     st.dataframe(pd.DataFrame(users).set_index("id"), width="stretch")
 
-    st.subheader("Manage an account")
+    ui.section("Manage an account")
     others = [u for u in users if u["id"] != me["id"]]
     if not others:
         st.info("There are no other accounts yet.")
@@ -454,24 +503,47 @@ def admin_page():
         target = st.selectbox("Account", others, format_func=lambda u: f"{u['username']} ({u['role']})")
         a, b, c = st.columns(3)
         new_role = "user" if target["role"] == "admin" else "admin"
-        if a.button(f"Make {new_role}", width="stretch"):
+        if a.button(f"Make {new_role}", width="stretch", icon=":material/manage_accounts:"):
             if api("PUT", f"/admin/users/{target['id']}/role", json={"role": new_role}):
                 st.rerun()
-        if b.button("Unlock", width="stretch", disabled=not target["locked"]):
+        if b.button("Unlock", width="stretch", disabled=not target["locked"], icon=":material/lock_open:"):
             if api("POST", f"/admin/users/{target['id']}/unlock"):
                 st.rerun()
         with c:
             confirm = st.checkbox(f"Yes, delete {target['username']}")
-            if st.button("Delete account", width="stretch", disabled=not confirm, type="primary"):
+            if st.button("Delete account", width="stretch", disabled=not confirm, type="primary",
+                         icon=":material/person_remove:"):
                 if api("DELETE", f"/admin/users/{target['id']}"):
                     st.rerun()
 
-    st.subheader("Audit log")
+    ui.section("Audit log")
     st.caption("Account events and admin actions. Contains usernames, never training data.")
     audit = api("GET", "/admin/audit") or []
     if audit:
         st.dataframe(pd.DataFrame(audit), width="stretch", hide_index=True)
 
 
-{"Profile": profile_page, "Privacy & account": privacy_page, "Log workout": log_workout_page,
- "History": history_page, "Progress": progress_page, "Coach": coach_page, "Admin": admin_page}[page]()
+# ---------------- navigation ----------------
+st.logo(str(ROOT / "app" / "assets" / "logo.svg"), size="large")
+training = [st.Page(progress_page, title="Progress", icon=":material/monitoring:", url_path="progress", default=True),
+            st.Page(log_workout_page, title="Log workout", icon=":material/add_circle:", url_path="log"),
+            st.Page(history_page, title="History", icon=":material/history:", url_path="history"),
+            st.Page(coach_page, title="Coach", icon=":material/smart_toy:", url_path="coach")] if me["goal"] else []
+account = ([st.Page(profile_page, title="Profile", icon=":material/person:", url_path="profile")] if me["goal"] else []) \
+    + [st.Page(privacy_page, title="Privacy & account", icon=":material/shield_person:", url_path="privacy",
+               default=not me["goal"])]
+sections = {"Training": training, "Account": account} if training else {"Account": account}
+if me["role"] == "admin":
+    sections["Admin"] = [st.Page(admin_page, title="Admin", icon=":material/admin_panel_settings:", url_path="admin")]
+page = st.navigation(sections)
+
+with st.sidebar:
+    ui.user_badge(me["username"], me["role"], me["is_demo"])
+    if me["is_demo"]:
+        st.caption("Demo account: deleted when you log out.")
+    if st.button("Log out", width="stretch", icon=":material/logout:"):
+        api("POST", "/auth/logout")
+        log_out_locally("You are logged out.")
+        st.rerun()
+
+page.run()

@@ -7,3 +7,14 @@ address = "localhost"
 
 [browser]
 gatherUsageStats = false
+
+[client]
+# Hide the developer menu and Deploy button; the running indicator in the top right stays.
+toolbarMode = "minimal"
+
+[theme]
+base = "dark"
+primaryColor = "#E11D2E"
+backgroundColor = "#0B0B0D"
+secondaryBackgroundColor = "#16161B"
+textColor = "#F4F4F5"
