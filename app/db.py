@@ -17,6 +17,7 @@ from src.progress import exercise_kind
 ROOT = Path(__file__).resolve().parents[1]
 EXERCISES_CSV = ROOT / "data" / "processed" / "free_exercise_db.csv"
 DESCRIPTIONS_CSV = ROOT / "data" / "processed" / "megagym_exercises.csv"     # descriptions (CC0)
+ACTIVITIES_CSV = Path(__file__).resolve().parent / "activities.csv"   # classes such as yoga, with Compendium METs
 DB_URL = os.environ.get("GYM_DB_URL", f"sqlite:///{ROOT / 'data' / 'app.db'}")
 ROLES = ("user", "admin")
 
@@ -94,6 +95,7 @@ class Exercise(Base):
     level: Mapped[str] = mapped_column(String(20), default="")
     category: Mapped[str] = mapped_column(String(30), default="")
     description: Mapped[str | None] = mapped_column(Text, nullable=True)     # from megaGym where the name matches
+    met: Mapped[float | None] = mapped_column(Float, nullable=True)          # classes only (app/activities.csv)
 
     @property
     def kind(self) -> str:
@@ -195,7 +197,8 @@ def backup_outdated_db(engine) -> Path | None:
 # rows stay valid and no data has to be moved.
 ADDED_COLUMNS = [("workouts", "start_time", "TIME"), ("workouts", "focus", "VARCHAR(80)"),
                  ("exercises", "description", "TEXT"), ("users", "weekly_target", "INTEGER"),
-                 ("workout_sets", "duration_s", "INTEGER"), ("workout_sets", "level", "INTEGER")]
+                 ("workout_sets", "duration_s", "INTEGER"), ("workout_sets", "level", "INTEGER"),
+                 ("exercises", "met", "FLOAT")]
 
 
 def add_missing_columns(engine) -> list[str]:
@@ -229,7 +232,24 @@ def load_descriptions(s, descriptions_csv: Path | None = DESCRIPTIONS_CSV) -> in
     return count
 
 
-def init_db(engine, exercises_csv: Path = EXERCISES_CSV, descriptions_csv: Path | None = DESCRIPTIONS_CSV) -> None:
+def load_activities(s, activities_csv: Path | None = ACTIVITIES_CSV) -> int:
+    """Add the classes (yoga, Pilates, aerobics...) that free-exercise-db does not have. Safe to run again."""
+    if not activities_csv or not Path(activities_csv).exists():
+        return 0
+    df = pd.read_csv(activities_csv, keep_default_na=False, dtype={"compendium_code": str})
+    known = set(s.scalars(select(Exercise.id).where(Exercise.id.in_(list(df["exercise_id"])))))
+    new = [Exercise(id=r.exercise_id, name=r.name, primary_muscles=r.primary_muscles,
+                    secondary_muscles=r.secondary_muscles, equipment=r.equipment, level=r.level,
+                    category=r.category, met=float(r.met),
+                    description=f"{r.description} MET {r.met} (Compendium 2024, code {r.compendium_code}).")
+           for r in df.itertuples() if r.exercise_id not in known]
+    s.add_all(new)
+    s.commit()
+    return len(new)
+
+
+def init_db(engine, exercises_csv: Path = EXERCISES_CSV, descriptions_csv: Path | None = DESCRIPTIONS_CSV,
+            activities_csv: Path | None = ACTIVITIES_CSV) -> None:
     """Create the tables, update older databases, and load the exercise library once."""
     backup = backup_outdated_db(engine)
     if backup:
@@ -240,6 +260,7 @@ def init_db(engine, exercises_csv: Path = EXERCISES_CSV, descriptions_csv: Path 
     with Session() as s:
         if s.scalar(select(func.count()).select_from(Exercise)):
             load_descriptions(s, descriptions_csv)
+            load_activities(s, activities_csv)
             return
         if not Path(exercises_csv).exists():
             raise FileNotFoundError(f"{exercises_csv} is missing. Run: python -m src.build_processed")
@@ -249,3 +270,4 @@ def init_db(engine, exercises_csv: Path = EXERCISES_CSV, descriptions_csv: Path 
                            level=r.level, category=r.category) for r in df.itertuples())
         s.commit()
         load_descriptions(s, descriptions_csv)
+        load_activities(s, activities_csv)

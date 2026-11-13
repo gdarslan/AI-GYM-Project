@@ -258,7 +258,8 @@ def progress_page():
                c.get("this_week", 0) >= target),
               ("Week streak", c.get("week_streak", 0), f"weeks in a row with {target}+ sessions",
                c.get("week_streak", 0) > 0),
-              ("Cardio", f"{p.get('cardio_minutes', 0)} min", f"{p.get('cardio_sessions', 0)} sessions", False),
+              ("Cardio", f"{p.get('cardio_minutes', 0)} min",
+               f"{p.get('cardio_sessions', 0)} sessions · {p.get('class_minutes', 0)} min of classes", False),
               ("Muscles to train", len(gaps), "not trained for 10+ days", bool(gaps))])
     if not p.get("enough_data"):
         st.info(f"You have logged {p['workouts']} workout{'s' if p['workouts'] != 1 else ''}. Trends, neglected "
@@ -345,7 +346,7 @@ def progress_page():
                             width="stretch")
 
 
-FOCUS_OPTIONS = ["chest", "back", "shoulders", "arms", "legs", "core", "cardio", "full body"]
+FOCUS_OPTIONS = ["chest", "back", "shoulders", "arms", "legs", "core", "cardio", "mobility", "full body"]
 MAX_PICKS = 15          # exercises added in one go
 MAX_SETS = 100          # the API accepts at most 100 sets per workout
 BODYWEIGHT_SHARE = 0.65  # same assumption as src/progress.py
@@ -358,9 +359,12 @@ TABLES = {
               "columns": {"exercise": "object", "sets": "int64", "seconds": "int64"}},
     "cardio": {"title": "Cardio", "kinds": ("cardio",),
                "columns": {"exercise": "object", "minutes": "int64", "level": "int64"}},
+    "classes": {"title": "Classes (yoga, Pilates, aerobics)", "kinds": ("activity",),
+                "columns": {"exercise": "object", "minutes": "int64"}},
 }
 LOGGED_AS = {"weighted": "sets × reps × kg", "bodyweight": "sets × reps (0 kg = bodyweight)",
-             "timed": "sets × seconds", "cardio": "minutes at a level (1–10)"}
+             "timed": "sets × seconds", "cardio": "minutes at a level (1–10)",
+             "activity": "minutes (a class with its own MET)"}
 
 
 def table_for(kind: str) -> str:
@@ -372,7 +376,7 @@ def empty_table(t: str) -> pd.DataFrame:
 
 
 def exercise_library() -> dict:
-    """All 876 exercises by name, fetched once per session."""
+    """The whole library (free-exercise-db plus the classes) by name, fetched once per session."""
     if "library" not in st.session_state:
         st.session_state.library = {e["name"]: e for e in api("GET", "/exercises", params={"limit": 1000}) or []}
     return st.session_state.library
@@ -410,6 +414,8 @@ def new_row(name: str, kind: str, target: dict) -> dict:
     """A row for today's list, filled in with the next-session target when there is one."""
     if kind == "cardio":
         return {"exercise": name, "minutes": int(target.get("minutes") or 20), "level": int(target.get("level") or 5)}
+    if kind == "activity":
+        return {"exercise": name, "minutes": int(target.get("minutes") or 60)}
     if kind == "timed":
         return {"exercise": name, "sets": int(target.get("sets") or 3), "seconds": int(target.get("seconds") or 30)}
     return {"exercise": name, "sets": int(target.get("sets") or 3),
@@ -427,11 +433,14 @@ def add_to_plan(names: list[str], targets: dict, library: dict):
     st.rerun()
 
 
-def describe_sets(sets: list[dict]) -> str:
-    """'3 × 8 @ 77.5 kg', '3 × 15 (bodyweight)', '3 × 45 s' or '30 min @ level 6'."""
+def describe_sets(sets: list[dict], kind: str | None = None) -> str:
+    """'3 × 8 @ 77.5 kg', '3 × 15 (bodyweight)', '3 × 45 s', '30 min @ level 6' or '60 min' (a class)."""
     if not sets:
         return ""
-    if sets[0].get("kind") == "cardio" or any(s.get("level") for s in sets):
+    kind = kind or sets[0].get("kind")
+    if kind == "activity":
+        return f"{round(sum(s.get('duration_s') or 0 for s in sets) / 60)} min"
+    if kind == "cardio" or any(s.get("level") for s in sets):
         minutes = round(sum(s.get("duration_s") or 0 for s in sets) / 60)
         return f"{minutes} min @ level {sets[0].get('level') or '?'}"
     if any(s.get("duration_s") for s in sets):
@@ -441,12 +450,12 @@ def describe_sets(sets: list[dict]) -> str:
     return f"{len(sets)} × {reps} " + (f"@ {top:g} kg" if top else "(bodyweight)")
 
 
-def last_session_text(exercise_id):
+def last_session_text(exercise_id, kind: str | None = None):
     history = api("GET", f"/me/exercise-history/{exercise_id}") or []
     if not history:
         return "First time logging this exercise."
     last = history[-1]
-    return f"Last time ({last['date']}): {describe_sets(last['sets'])}"
+    return f"Last time ({last['date']}): {describe_sets(last['sets'], kind)}"
 
 
 def log_workout_page():
@@ -486,23 +495,31 @@ def log_workout_page():
 
     # ---- adding exercises ----
     ui.section("Add exercises")
-    suggest_tab, search_tab, copy_tab = st.tabs(["Suggestions", "Search all 876", "Copy a past workout"])
+    suggest_tab, search_tab, copy_tab = st.tabs(["Suggestions", f"Search all {len(library)}", "Copy a past workout"])
     with suggest_tab:
         muscles = {m for f in focus for m in ui.FOCUS_GROUPS.get(f, [])}
         if "full body" in focus:
             muscles = {m for group in ui.FOCUS_GROUPS.values() for m in group}
-        if not muscles and "cardio" not in focus:
+        if not muscles and "cardio" not in focus and "mobility" not in focus:
             st.caption("Pick the focus of the day above to see exercises for it.")
         else:
             def fits(e):
                 if e["kind"] == "cardio":
                     return "cardio" in focus
-                return e["kind"] != "timed" and any(m in muscles for m in e["primary_muscles"].split("; "))
+                if e["kind"] == "activity":        # yoga and Pilates for mobility; aerobics, step and Zumba for cardio
+                    cardio_class = (e.get("met") or 0) >= 5
+                    return ("cardio" in focus) if cardio_class else ("mobility" in focus)
+                if e["kind"] == "timed":
+                    return "mobility" in focus
+                return any(m in muscles for m in e["primary_muscles"].split("; "))
             yours = sorted((n for n in times_done if n in library and fits(library[n])), key=lambda n: -times_done[n])
             common = [n for n, e in library.items() if fits(e) and n not in yours and (
-                e["kind"] == "cardio" or (e["category"] == "strength" and e["level"] in ("beginner", "intermediate")
+                e["kind"] in ("cardio", "activity", "timed")
+                or (e["category"] == "strength" and e["level"] in ("beginner", "intermediate")
                                           and e["equipment"] in ("barbell", "dumbbell", "cable", "machine",
                                                                  "body only")))]
+            # whole classes first (yoga, Zumba), then cardio machines, then single exercises and stretches
+            common.sort(key=lambda n: {"activity": 0, "cardio": 1}.get(library[n]["kind"], 2))
             picks = st.multiselect("Exercises for " + ", ".join(focus), yours + common,
                                    format_func=lambda n: f"★ {n}" if n in yours else n,
                                    placeholder="Choose one or more (★ = you did it before)",
@@ -513,7 +530,7 @@ def log_workout_page():
                          disabled=not picks or len(picks) > MAX_PICKS, icon=":material/playlist_add:"):
                 add_to_plan(picks, targets, library)
     with search_tab:
-        query = st.text_input("Search exercise or muscle", placeholder="e.g. bench, bike, plank, biceps")
+        query = st.text_input("Search exercise or muscle", placeholder="e.g. bench, bike, plank, yoga, biceps")
         words = query.lower().split()
         hits = [n for n, e in library.items()
                 if words and all(w in n or w in e["primary_muscles"] for w in words)][:60]
@@ -570,11 +587,14 @@ def log_workout_page():
                                                              required=True),
                        "seconds": st.column_config.NumberColumn("Seconds per set", min_value=5, max_value=600,
                                                                 step=5, default=30, required=True)}
-        else:
+        elif t == "cardio":
             config |= {"minutes": st.column_config.NumberColumn("Minutes", min_value=1, max_value=300, step=1,
                                                                 default=20, required=True),
                        "level": st.column_config.NumberColumn("Level (1–10)", min_value=1, max_value=10, step=1,
                                                               default=5, required=True)}
+        else:
+            config |= {"minutes": st.column_config.NumberColumn("Minutes", min_value=1, max_value=300, step=1,
+                                                                default=60, required=True)}
         st.markdown(f"**{spec['title']}** · <span class='gc-muted'>{' / '.join(LOGGED_AS[k] for k in spec['kinds'])}"
                     f"</span>", unsafe_allow_html=True)
         out = st.data_editor(df, key=f"editor_{t}", num_rows="dynamic", hide_index=True, width="stretch",
@@ -585,21 +605,25 @@ def log_workout_page():
     strength = edited.get("strength", empty_table("strength"))
     holds = edited.get("holds", empty_table("holds"))
     cardio = edited.get("cardio", empty_table("cardio"))
-    names = list(dict.fromkeys([*strength["exercise"], *holds["exercise"], *cardio["exercise"]]))
+    classes = edited.get("classes", empty_table("classes"))
+    names = list(dict.fromkeys([*strength["exercise"], *holds["exercise"], *cardio["exercise"],
+                                *classes["exercise"]]))
     if not names:
-        st.caption("Add exercises above, or click the empty row of the table to type one in. Cardio and holds get "
-                   "their own table with minutes or seconds when you add them.")
+        st.caption("Add exercises above, or click the empty row of the table to type one in. Cardio, holds and "
+                   "classes such as yoga get their own table with minutes or seconds when you add them.")
         return
 
-    n_sets = int(strength["sets"].fillna(0).sum() + holds["sets"].fillna(0).sum()) + len(cardio)
+    n_sets = int(strength["sets"].fillna(0).sum() + holds["sets"].fillna(0).sum()) + len(cardio) + len(classes)
     bw_part = BODYWEIGHT_SHARE * (me["weight_kg"] or 0)
     volume = float(sum((r.sets or 0) * (r.reps or 0) * ((r.weight_kg or 0) + (
         bw_part if library[r.exercise]["kind"] == "bodyweight" else 0)) for r in strength.itertuples()))
     cardio_parts = [(float(r.minutes or 0), int(r.level or 5)) for r in cardio.itertuples()]
-    kcal = estimate_kcal(me["weight_kg"], duration, rpe, cardio_parts)
+    class_parts = [(float(r.minutes or 0), float(library[r.exercise].get("met") or 2.3)) for r in classes.itertuples()]
+    kcal = estimate_kcal(me["weight_kg"], duration, rpe, cardio_parts, class_parts, lifting=not strength.empty)
+    timed_minutes = sum(m for m, _ in cardio_parts) + sum(m for m, _ in class_parts)
     ui.cards([("Exercises", len(names), ", ".join(focus) or "no focus chosen", False),
               ("Sets", n_sets, "in this workout", False),
-              ("Cardio", f"{sum(m for m, _ in cardio_parts):.0f} min", "minutes at your levels", False),
+              ("Cardio and classes", f"{timed_minutes:.0f} min", "minutes", False),
               ("Volume", f"{volume:,.0f} kg", "reps × weight (bodyweight ≈ 65%)", False),
               ("Calories", f"≈{kcal}" if kcal else "–", "MET-formula estimate", False)])
 
@@ -608,7 +632,7 @@ def log_workout_page():
         for i, name in enumerate(names):
             e = library[name]
             cols[i % 2].markdown(ui.exercise_card(name, e["primary_muscles"], e["secondary_muscles"], e["equipment"],
-                                                  e["level"], e["category"], last_session_text(e["id"]),
+                                                  e["level"], e["category"], last_session_text(e["id"], e["kind"]),
                                                   e.get("description"), LOGGED_AS[e["kind"]]),
                                  unsafe_allow_html=True)
 
@@ -625,7 +649,9 @@ def log_workout_page():
                 + [{"exercise_id": library[r.exercise]["id"], "duration_s": int(r.seconds)}
                    for r in holds.itertuples() for _ in range(int(r.sets))]
                 + [{"exercise_id": library[r.exercise]["id"], "duration_s": int(r.minutes) * 60, "level": int(r.level)}
-                   for r in cardio.itertuples()])
+                   for r in cardio.itertuples()]
+                + [{"exercise_id": library[r.exercise]["id"], "duration_s": int(r.minutes) * 60}
+                   for r in classes.itertuples()])
         result = api("POST", "/me/workouts", json={
             "date": str(day), "start_time": start.strftime("%H:%M"), "focus": ", ".join(focus) or None,
             "duration_min": duration, "rpe": rpe, "sets": sets})

@@ -133,8 +133,9 @@ class ExerciseOut(BaseModel):
     equipment: str
     level: str
     category: str
-    kind: str                            # weighted, bodyweight, timed or cardio
+    kind: str                            # weighted, bodyweight, timed, cardio or activity
     description: str | None = None
+    met: float | None = None             # classes only
 
 
 # ---------------- coach ----------------

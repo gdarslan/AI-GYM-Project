@@ -19,7 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app import security
-from app.db import (DB_URL, DESCRIPTIONS_CSV, EXERCISES_CSV, AuditLog, AuthSession, CoachConversation, CoachFeedback,
+from app.db import (ACTIVITIES_CSV, DB_URL, DESCRIPTIONS_CSV, EXERCISES_CSV, AuditLog, AuthSession, CoachConversation, CoachFeedback,
                     CoachMessage, Exercise, User, Workout, WorkoutSet, init_db, make_engine)
 from app.schemas import (CONSENT_VERSION, AccountOut, AuditOut, CoachIn, CoachOut, CoachQualityOut, ConsentIn,
                          ConversationOut, ExerciseOut, FeedbackIn, FeedbackOut, LoginIn, MeOut, MessageOut,
@@ -42,14 +42,15 @@ def now() -> datetime:
 
 
 def create_app(db_url: str = DB_URL, exercises_csv: Path = EXERCISES_CSV, llm: coach.LLMClient | None = None,
-               coach_log: Path | None = None, descriptions_csv: Path | None = DESCRIPTIONS_CSV) -> FastAPI:
+               coach_log: Path | None = None, descriptions_csv: Path | None = DESCRIPTIONS_CSV,
+               activities_csv: Path | None = ACTIVITIES_CSV) -> FastAPI:
     """coach_log: an extra JSONL file of every answer, for evaluation runs only; the app itself stores the
     conversations in the database, linked to the account, so users can see and delete them."""
     engine = make_engine(db_url)
 
     @asynccontextmanager
     async def lifespan(_):
-        init_db(engine, exercises_csv, descriptions_csv)     # tables + exercise library, on startup
+        init_db(engine, exercises_csv, descriptions_csv, activities_csv)   # tables + exercise library, on startup
         yield
 
     api = FastAPI(title="AI Gym Coach", lifespan=lifespan)
@@ -141,7 +142,9 @@ def set_load(st: WorkoutSet, body_weight_kg: float | None) -> float:
 def workout_out(w: Workout, records: list[str] | None = None) -> WorkoutOut:
     bw = w.user.weight_kg
     cardio = [((st.duration_s or 0) / 60, st.level) for st in w.sets if st.exercise.kind == "cardio"]
-    kcal = estimate_kcal(bw, w.duration_min, w.rpe, cardio) if bw else None
+    classes = [((st.duration_s or 0) / 60, st.exercise.met or 2.3) for st in w.sets if st.exercise.kind == "activity"]
+    lifting = any(st.exercise.kind in ("weighted", "bodyweight") for st in w.sets)
+    kcal = estimate_kcal(bw, w.duration_min, w.rpe, cardio, classes, lifting) if bw else None
     return WorkoutOut(id=w.id, date=w.date, start_time=w.start_time, focus=w.focus,
                       duration_min=w.duration_min, rpe=w.rpe,
                       sets=[SetOut(exercise_id=st.exercise_id, exercise=st.exercise.name, kind=st.exercise.kind,
@@ -200,9 +203,9 @@ def add_workout(s: Session, user: User, data: WorkoutIn) -> Workout:
     rows = []
     for i, st in enumerate(data.sets):
         ex = known[st.exercise_id]
-        if ex.kind in ("timed", "cardio"):          # logged by time: no reps or weight
+        if ex.kind in ("timed", "cardio", "activity"):     # logged by time: no reps or weight
             if not st.duration_s:
-                unit = "minutes" if ex.kind == "cardio" else "seconds"
+                unit = "seconds" if ex.kind == "timed" else "minutes"
                 raise HTTPException(422, f"'{ex.name}' is logged in {unit}, not reps.")
             rows.append(WorkoutSet(exercise_id=ex.id, set_number=i + 1, reps=0, weight_kg=0.0,
                                    duration_s=st.duration_s, level=st.level if ex.kind == "cardio" else None))

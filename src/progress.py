@@ -21,13 +21,19 @@ IMPROVING_PCT = 2.5          # estimated 1RM must rise more than this to count a
 MIN_WORKOUTS = 3             # fewer workouts than this: too little data for firm conclusions
 
 # ---------------- kinds of exercise ----------------
-KINDS = ("weighted", "bodyweight", "timed", "cardio")
+KINDS = ("weighted", "bodyweight", "timed", "cardio", "activity")
 HOLD_WORDS = ("plank", "hold", "wall sit", "isometric")   # held for time, though listed as strength
 BODYWEIGHT_SHARE = 0.65      # a bodyweight rep moves roughly 65% of body weight (approximation, e.g. a push-up)
 
 
 def exercise_kind(name: str, category: str, equipment: str) -> str:
-    """How an exercise is logged, from free-exercise-db's category and equipment."""
+    """How an exercise is logged, from free-exercise-db's category and equipment.
+
+    "activity" is the app's own category for whole classes (yoga, Pilates, aerobics; app/activities.csv), which
+    free-exercise-db does not have: logged in minutes, each with its own MET value.
+    """
+    if category == "activity":
+        return "activity"
     if category == "cardio":
         return "cardio"
     if category == "stretching" or any(w in (name or "").lower() for w in HOLD_WORDS):
@@ -133,6 +139,7 @@ def progress_summary(log: pd.DataFrame, exercises: pd.DataFrame, today: date | N
                   for m in MAJOR_MUSCLES}
     days_of_history = int((pd.Timestamp(today) - log["date"].min()).days)
     cardio = log[log["kind"] == "cardio"]
+    classes = log[log["kind"] == "activity"]
     return {
         "period_weeks": weeks,
         "period": f"{log['date'].min():%Y-%m-%d} to {log['date'].max():%Y-%m-%d}",
@@ -142,6 +149,7 @@ def progress_summary(log: pd.DataFrame, exercises: pd.DataFrame, today: date | N
         "workouts_per_week": round(len(workout_days) / weeks, 1),
         "cardio_minutes": int(round(cardio["duration_s"].fillna(0).sum() / 60)),
         "cardio_sessions": int(cardio["date"].dt.normalize().nunique()),
+        "class_minutes": int(round(classes["duration_s"].fillna(0).sum() / 60)),
         "volume_share_pct": _share_pct(mv),
         "volume_share_pct_last_2_weeks": _share_pct(recent),
         "days_since_last_trained": days_since,
@@ -239,6 +247,8 @@ def next_session_targets(log: pd.DataFrame, exercises: pd.DataFrame, goal: str, 
             continue
         sets = rows[rows["date"] == last_day]
         kind, n = sets["kind"].iloc[0], int(len(sets))
+        if kind == "activity":                   # classes have no progression rule: the class sets the pace
+            continue
         if kind == "cardio":
             minutes = round(sets["duration_s"].fillna(0).sum() / 60)
             level = int(sets["level"].max()) if sets["level"].notna().any() else 5

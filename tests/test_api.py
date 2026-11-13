@@ -484,7 +484,9 @@ def test_workout_keeps_start_time_and_focus(client):
 
 
 def test_whole_exercise_library_can_be_listed(client):
-    assert len(client.get("/exercises", params={"limit": 1000}).json()) == len(EXERCISES) + len(OTHER_KINDS)
+    from app.db import ACTIVITIES_CSV
+    classes = len(pd.read_csv(ACTIVITIES_CSV))
+    assert len(client.get("/exercises", params={"limit": 1000}).json()) == len(EXERCISES) + len(OTHER_KINDS) + classes
 
 
 def test_older_database_gets_new_columns_without_losing_data(tmp_path):
@@ -574,3 +576,22 @@ def test_cardio_holds_and_bodyweight_are_logged_their_own_way(client):
 def test_wrong_fields_for_the_kind_are_rejected(client, bad_set, message):
     r = client.post("/me/workouts", headers=auth(client), json=workout(sets=[bad_set]))
     assert r.status_code == 422 and message in r.json()["detail"]
+
+
+def test_yoga_is_a_class_with_its_own_met(client):
+    yoga = next(e for e in client.get("/exercises", params={"search": "yoga hatha"}).json())
+    assert (yoga["kind"], yoga["met"]) == ("activity", 2.3) and "02150" in yoga["description"]
+    h = auth(client)                                                       # 78 kg
+    w = client.post("/me/workouts", headers=h, json=workout(duration_min=60, rpe=3, sets=[
+        {"exercise_id": "Activity_Yoga_Hatha", "duration_s": 3600}])).json()
+    assert w["estimated_kcal"] == round(2.3 * 78)                        # not the weight-training MET
+    assert client.get("/me/progress", headers=h).json()["class_minutes"] == 60
+    r = client.post("/me/workouts", headers=h, json=workout(sets=[{"exercise_id": "Activity_Yoga_Hatha", "reps": 10}]))
+    assert r.status_code == 422 and "minutes" in r.json()["detail"]
+
+
+def test_session_without_weights_is_not_counted_as_weight_training(client):
+    h = auth(client)
+    w = client.post("/me/workouts", headers=h, json=workout(duration_min=30, rpe=8, sets=[
+        {"exercise_id": "Plank", "duration_s": 60}, {"exercise_id": "Plank", "duration_s": 60}])).json()
+    assert w["estimated_kcal"] == round(2.3 * 78 * 0.5)                  # light stretching MET, whatever the RPE

@@ -1,0 +1,12 @@
+exercise_id,name,primary_muscles,secondary_muscles,equipment,level,category,met,compendium_code,description
+Activity_Yoga_Hatha,"yoga, hatha",,,body only,beginner,activity,2.3,02150,"A yoga class or session in the Hatha style: slow poses held for several breaths, with breathing exercises."
+Activity_Yoga_Vinyasa,"yoga, vinyasa",,,body only,intermediate,activity,2.7,02185,"A flowing yoga session where poses follow each other in time with the breath."
+Activity_Yoga_Power,"yoga, power",,,body only,intermediate,activity,4.0,02160,"A vigorous, fitness-based yoga session with strength-demanding poses."
+Activity_Yoga_Hot,"yoga, hot",,,body only,intermediate,activity,3.0,02155,"Yoga practised in a heated room."
+Activity_Yoga_Sun_Salutation,"yoga, sun salutation (surya namaskar)",,,body only,beginner,activity,3.5,02180,"Repeated rounds of the sun salutation sequence."
+Activity_Pilates_Mat,"pilates, mat",,,body only,beginner,activity,1.8,02103,"A traditional Pilates mat session."
+Activity_Pilates_General,"pilates, general",,,other,beginner,activity,2.8,02105,"A Pilates class or session, general."
+Activity_Stretching_Routine,"stretching routine",,,body only,beginner,activity,2.3,02101,"A full stretching or mobility session, mild effort."
+Activity_Aerobics,"aerobics class",,,body only,beginner,activity,7.3,02000,"An aerobics class, general."
+Activity_Step_Class,"step class",,,other,beginner,activity,7.8,02004,"A bench step class, general."
+Activity_Zumba,"zumba class",,,body only,beginner,activity,6.5,02310,"A Zumba group class."

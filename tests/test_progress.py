@@ -205,3 +205,13 @@ def test_targets_for_cardio_and_holds():
 def test_cardio_met_bands_follow_the_compendium():
     from src.calories import met_for_level
     assert [met_for_level(lv) for lv in (1, 3, 4, 6, 7, 8, 9, 10, None)] == [4.0, 4.0, 6.0, 6.0, 8.0, 8.0, 10.8, 10.8, 6.0]
+
+
+def test_classes_and_sessions_without_weights():
+    from src.calories import estimate_kcal
+    assert exercise_kind("yoga, hatha", "activity", "body only") == "activity"
+    assert estimate_kcal(66, 60, 7, activities=[(60, 2.3)], lifting=False) == round(2.3 * 66)
+    assert estimate_kcal(66, 60, 7, lifting=False) == round(2.3 * 66)      # stretching-only session
+    assert estimate_kcal(66, 60, 7) == round(5.0 * 66)                     # with weights: RPE 7 -> MET 5.0
+    # 30 min Zumba (6.5) inside a 45 min session with weights at RPE 7: the other 15 min at MET 5.0
+    assert estimate_kcal(66, 45, 7, activities=[(30, 6.5)]) == round(6.5 * 66 * 0.5 + 5.0 * 66 * 0.25)

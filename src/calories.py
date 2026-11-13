@@ -24,6 +24,7 @@ CARDIO_MET_BY_LEVEL = [
     (10, 10.8, "01236"),  # bicycling, stationary, 200-229 watts, vigorous
 ]
 DEFAULT_MET = 5.0         # no RPE given: the general gym value (02061)
+LIGHT_MET = 2.3           # 02101, stretching, mild: the rest of a session without weights (only holds or classes)
 DEFAULT_LEVEL = 5
 
 
@@ -38,16 +39,21 @@ def met_for_level(level: int | None) -> float:
 
 
 def estimate_kcal(weight_kg: float, duration_min: int | None, rpe: int | None,
-                  cardio: list[tuple[float, int | None]] = ()) -> int | None:
-    """kcal for a session: cardio parts at their own MET, the remaining minutes as resistance training.
+                  cardio: list[tuple[float, int | None]] = (), activities: list[tuple[float, float]] = (),
+                  lifting: bool = True) -> int | None:
+    """kcal for a session: cardio and classes at their own MET, the remaining minutes as the rest of the session.
 
-    cardio = [(minutes, level), ...]. None when there is neither a duration nor cardio.
+    cardio = [(minutes, level), ...]; activities = [(minutes, MET), ...] for classes such as yoga.
+    The remaining minutes count as resistance training (MET by RPE) when the session has weights or bodyweight
+    sets (lifting=True), and as light stretching (2.3) when it has only holds, stretches or classes: a yoga or
+    stretching session is not weight training. None when there is neither a duration nor any timed part.
     """
-    if not duration_min and not cardio:
+    if not duration_min and not cardio and not activities:
         return None
-    cardio_minutes = sum(m for m, _ in cardio)
+    timed_minutes = sum(m for m, _ in cardio) + sum(m for m, _ in activities)
     kcal = sum(met_for_level(level) * weight_kg * minutes / 60 for minutes, level in cardio)
-    rest = (duration_min or 0) - cardio_minutes
+    kcal += sum(met * weight_kg * minutes / 60 for minutes, met in activities)
+    rest = (duration_min or 0) - timed_minutes
     if rest > 0:
-        kcal += met_for_rpe(rpe) * weight_kg * rest / 60
+        kcal += (met_for_rpe(rpe) if lifting else LIGHT_MET) * weight_kg * rest / 60
     return round(kcal)
