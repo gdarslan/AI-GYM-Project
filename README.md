@@ -8,10 +8,12 @@ questions. A separate experiment tests whether a trained model predicts calories
 
 | Path | Contents |
 |---|---|
-| `app/main.py` | FastAPI backend: users, exercises, workouts, progress, demo users |
-| `app/db.py` | SQLite database tables; loads the exercise library from free-exercise-db |
+| `app/main.py` | FastAPI backend: login, my account and data, workouts, progress, coach, admin |
+| `app/db.py` | SQLite database tables (accounts, sessions, audit log, workouts); loads the exercise library |
+| `app/security.py` | Password hashing (PBKDF2), password rules and session tokens |
 | `app/schemas.py` | Input validation (impossible values are rejected) |
-| `app/streamlit_app.py` | The screens: profile, log workout, history, progress, coach |
+| `app/streamlit_app.py` | The screens: login, progress, log workout, history, coach, profile, privacy, admin |
+| `app/create_admin.py` | Command to create the first admin |
 | `src/progress.py` | Progress calculations (plain code, no AI): volume, neglected muscles, recovery, strength |
 | `src/coach.py` | The AI coach: builds the context, calls the local model (Ollama), logs every answer |
 | `prompts/` | Coach prompts, one file per version |
@@ -58,8 +60,18 @@ python -m uvicorn app.main:app --reload          # 1. the API, docs at http://lo
 python -m streamlit run app/streamlit_app.py     # 2. the screens, opens in the browser
 ```
 
-Click **Demo user** in the sidebar for a made-up user with 4 weeks of training. The database is stored in
-`data/app.db` (not committed).
+The app opens on a login screen: create an account, log in, or **Try the demo** (a made-up user with 4 weeks of
+training, deleted at logout). The database is stored in `data/app.db` (not committed).
+
+**Admin:** there is no way to become admin through the website. Create the first admin on this computer with
+`python -m app.create_admin` (it can also promote an existing account); admins can then promote others on the
+Admin page. Admins manage accounts but cannot see anyone's workouts or body data.
+
+**Privacy and security:** explicit consent for training data at sign-up and a separate, optional consent for the
+AI coach; download and delete your data on the *Privacy & account* page; passwords hashed with PBKDF2-SHA256
+(600,000 rounds); session tokens stored hashed and valid for 8 hours; 5 wrong passwords lock an account for
+15 minutes; admin actions in an audit log; the app is only reachable from this computer (`.streamlit/config.toml`,
+and the API listens on localhost).
 
 The Coach page needs [Ollama](https://ollama.com) running with the model downloaded once:
 `ollama pull llama3.2:3b`. Every coach question and answer is logged to `logs/coach_log.jsonl` (not committed)

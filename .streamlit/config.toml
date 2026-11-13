@@ -2,6 +2,8 @@
 [server]
 # Don't ask for an e-mail address on first start (it blocks the terminal); start_app.bat opens the browser instead.
 headless = true
+# Only this computer can open the app: it holds health-related data, so it is not shared on the network.
+address = "localhost"
 
 [browser]
 gatherUsageStats = false

@@ -3,7 +3,9 @@ from datetime import date, timedelta
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
+from app.db import AuthSession, User
 from app.main import create_app
 from src.coach import CoachUnavailable
 
@@ -18,8 +20,9 @@ EXERCISES = [
     ("Romanian_Deadlift", "romanian deadlift", "hamstrings", "calves; glutes; lower back"),
     ("Leg_Press", "leg press", "quadriceps", "calves; glutes; hamstrings"),
 ]
-USER = {"age": 24, "gender": "male", "height_cm": 180, "weight_kg": 78,
-        "goal": "build muscle", "experience": "intermediate"}
+PROFILE = {"age": 24, "gender": "male", "height_cm": 180, "weight_kg": 78,
+           "goal": "build muscle", "experience": "intermediate"}
+PASSWORD = "correct horse battery"
 
 
 class FakeLLM:
@@ -55,6 +58,27 @@ def client(tmp_path, llm):
         yield c
 
 
+def register(client, username="alice", password=PASSWORD, ai_coach=True, **changes):
+    body = {"username": username, "password": password, "consent_health_data": True,
+            "consent_ai_coach": ai_coach, **PROFILE, **changes}
+    return client.post("/auth/register", json=body)
+
+
+def auth(client, username="alice", **kw):
+    """Register and return the Authorization header."""
+    r = register(client, username, **kw)
+    assert r.status_code == 201, r.text
+    return {"Authorization": f"Bearer {r.json()['token']}"}
+
+
+def make_admin(client, username="boss"):
+    headers = auth(client, username)
+    with client.app.state.Session() as s:
+        s.scalar(select(User).where(User.username == username)).role = "admin"
+        s.commit()
+    return headers
+
+
 def workout(day=None, **overrides):
     w = {"date": str(day or date.today()), "duration_min": 60, "rpe": 7,
          "sets": [{"exercise_id": "Barbell_Bench_Press", "reps": 8, "weight_kg": 70},
@@ -62,28 +86,109 @@ def workout(day=None, **overrides):
     return w | overrides
 
 
-def test_create_and_read_user(client):
-    r = client.post("/users", json=USER)
+# ---------------- registration and login ----------------
+def test_register_and_me(client):
+    r = register(client)
     assert r.status_code == 201
-    uid = r.json()["id"]
-    assert client.get(f"/users/{uid}").json() == USER | {"id": uid}
-    assert client.get("/users/999").status_code == 404
+    me = client.get("/me", headers={"Authorization": f"Bearer {r.json()['token']}"}).json()
+    assert me["username"] == "alice" and me["role"] == "user"
+    assert me["consent_health_at"] is not None and me["consent_ai_coach"] is True
+    assert "password_hash" not in me and "password" not in me
+
+
+def test_register_requires_health_consent(client):
+    assert register(client, consent_health_data=False).status_code == 422
+
+
+@pytest.mark.parametrize("password", ["short", "password1", "alice-is-strong"])
+def test_weak_passwords_rejected(client, password):
+    assert register(client, password=password).status_code == 422
+
+
+def test_username_must_be_unique_ignoring_case(client):
+    register(client, "Alice")
+    assert register(client, "alice").status_code == 409
 
 
 @pytest.mark.parametrize("field, value", [("age", 5), ("weight_kg", 1000), ("goal", "be famous"),
-                                          ("gender", "unknown")])
-def test_impossible_user_values_rejected(client, field, value):
-    assert client.post("/users", json=USER | {field: value}).status_code == 422
+                                          ("username", "a b"), ("username", "x")])
+def test_impossible_registration_values_rejected(client, field, value):
+    assert register(client, **{field: value}).status_code == 422
 
 
+def test_password_is_stored_hashed(client):
+    register(client)
+    with client.app.state.Session() as s:
+        stored = s.scalar(select(User.password_hash).where(User.username == "alice"))
+    assert PASSWORD not in stored and stored.startswith("pbkdf2_sha256$")
+
+
+def test_login_and_logout(client):
+    register(client)
+    assert client.post("/auth/login", json={"username": "alice", "password": "wrong password"}).status_code == 401
+    assert client.post("/auth/login", json={"username": "nobody", "password": PASSWORD}).status_code == 401
+    r = client.post("/auth/login", json={"username": "ALICE", "password": PASSWORD})
+    assert r.status_code == 200
+    headers = {"Authorization": f"Bearer {r.json()['token']}"}
+    assert client.get("/me", headers=headers).status_code == 200
+    assert client.post("/auth/logout", headers=headers).status_code == 204
+    assert client.get("/me", headers=headers).status_code == 401
+
+
+def test_session_tokens_are_stored_hashed(client):
+    token = register(client).json()["token"]
+    with client.app.state.Session() as s:
+        stored = s.scalars(select(AuthSession.token_hash)).all()
+    assert token not in stored and len(stored) == 1
+
+
+def test_account_locks_after_five_wrong_passwords(client):
+    register(client)
+    for _ in range(5):
+        client.post("/auth/login", json={"username": "alice", "password": "wrong password"})
+    r = client.post("/auth/login", json={"username": "alice", "password": PASSWORD})
+    assert r.status_code == 429                      # locked, even with the right password
+
+
+def test_expired_session_rejected(client):
+    headers = auth(client)
+    with client.app.state.Session() as s:
+        for session in s.scalars(select(AuthSession)):
+            session.expires_at = session.expires_at - timedelta(days=1)
+        s.commit()
+    assert client.get("/me", headers=headers).status_code == 401
+
+
+@pytest.mark.parametrize("method, path", [("get", "/me"), ("get", "/me/workouts"), ("get", "/me/progress"),
+                                          ("get", "/me/export"), ("post", "/me/coach"), ("get", "/admin/users")])
+def test_endpoints_need_login(client, method, path):
+    assert getattr(client, method)(path).status_code == 401
+    assert getattr(client, method)(path, headers={"Authorization": "Bearer made-up"}).status_code == 401
+
+
+def test_change_password_signs_out_other_sessions(client):
+    first = auth(client)
+    second = {"Authorization": "Bearer " + client.post(
+        "/auth/login", json={"username": "alice", "password": PASSWORD}).json()["token"]}
+    r = client.put("/me/password", headers=first, json={"current_password": PASSWORD,
+                                                         "new_password": "a much better passphrase"})
+    assert r.status_code == 204
+    assert client.get("/me", headers=first).status_code == 200      # this session stays
+    assert client.get("/me", headers=second).status_code == 401     # the other one is signed out
+    assert client.post("/auth/login", json={"username": "alice", "password": PASSWORD}).status_code == 401
+
+
+# ---------------- workouts and progress ----------------
 def test_log_workout_and_history(client):
-    uid = client.post("/users", json=USER).json()["id"]
-    r = client.post(f"/users/{uid}/workouts", json=workout())
+    h = auth(client)
+    r = client.post("/me/workouts", headers=h, json=workout())
     assert r.status_code == 201
     sets = r.json()["sets"]
     assert [s["set_number"] for s in sets] == [1, 2]
     assert sets[0]["exercise"] == "barbell bench press - medium grip"
-    assert len(client.get(f"/users/{uid}/workouts").json()) == 1
+    assert r.json()["total_volume_kg"] == 2 * 8 * 70
+    assert r.json()["estimated_kcal"] == 390          # MET 5.0 (RPE 7) x 78 kg x 1 hour
+    assert len(client.get("/me/workouts", headers=h).json()) == 1
 
 
 @pytest.mark.parametrize("change", [
@@ -95,131 +200,114 @@ def test_log_workout_and_history(client):
     {"sets": [{"exercise_id": "Not_An_Exercise", "reps": 8, "weight_kg": 70}]},
 ])
 def test_impossible_workouts_rejected(client, change):
-    uid = client.post("/users", json=USER).json()["id"]
-    assert client.post(f"/users/{uid}/workouts", json=workout(**change)).status_code == 422
-    assert client.get(f"/users/{uid}/workouts").json() == []
+    h = auth(client)
+    assert client.post("/me/workouts", headers=h, json=workout(**change)).status_code == 422
+    assert client.get("/me/workouts", headers=h).json() == []
 
 
-def test_exercise_search(client):
+def test_users_only_see_their_own_workouts(client):
+    a, b = auth(client, "alice"), auth(client, "bob")
+    wid = client.post("/me/workouts", headers=a, json=workout()).json()["id"]
+    assert client.get("/me/workouts", headers=b).json() == []
+    assert client.delete(f"/me/workouts/{wid}", headers=b).status_code == 404
+    assert len(client.get("/me/workouts", headers=a).json()) == 1
+
+
+def test_new_personal_record(client):
+    h = auth(client)
+    bench = lambda kg: [{"exercise_id": "Barbell_Bench_Press", "reps": 8, "weight_kg": kg}]
+    today = date.today()
+    first = client.post("/me/workouts", headers=h, json=workout(today - timedelta(days=4), sets=bench(70))).json()
+    assert first["new_records"] == []
+    better = client.post("/me/workouts", headers=h, json=workout(today - timedelta(days=2), sets=bench(75))).json()
+    assert better["new_records"] == ["barbell bench press - medium grip"]
+    worse = client.post("/me/workouts", headers=h, json=workout(today, sets=bench(60))).json()
+    assert worse["new_records"] == []
+
+
+def test_exercise_history(client):
+    h = auth(client)
+    client.post("/me/workouts", headers=h, json=workout())
+    hist = client.get("/me/exercise-history/Barbell_Bench_Press", headers=h).json()
+    assert len(hist) == 1 and hist[0]["best_est_1rm_kg"] == pytest.approx(88.7)
+    assert client.get("/me/exercise-history/Nope", headers=h).status_code == 404
+
+
+def test_exercise_search_is_public(client):
     names = [e["name"] for e in client.get("/exercises", params={"search": "bench"}).json()]
     assert names == ["barbell bench press - medium grip"]
     by_muscle = [e["name"] for e in client.get("/exercises", params={"search": "quadriceps"}).json()]
     assert set(by_muscle) == {"barbell squat", "leg press"}
 
 
-def test_delete_user_removes_all_their_data(client):
-    uid = client.post("/users", json=USER).json()["id"]
-    other = client.post("/users", json=USER).json()["id"]
-    client.post(f"/users/{uid}/workouts", json=workout())
-    client.post(f"/users/{other}/workouts", json=workout())
-
-    assert client.delete(f"/users/{uid}").status_code == 204
-    assert client.get(f"/users/{uid}").status_code == 404
-    assert client.get(f"/users/{uid}/workouts").status_code == 404
-    assert len(client.get(f"/users/{other}/workouts").json()) == 1   # other users untouched
-
-
-def test_user_cannot_delete_someone_elses_workout(client):
-    a = client.post("/users", json=USER).json()["id"]
-    b = client.post("/users", json=USER).json()["id"]
-    wid = client.post(f"/users/{a}/workouts", json=workout()).json()["id"]
-    assert client.delete(f"/users/{b}/workouts/{wid}").status_code == 404
-    assert len(client.get(f"/users/{a}/workouts").json()) == 1
-
-
-def test_demo_user_progress(client):
-    uid = client.post("/demo-users/legs_neglected").json()["id"]
-    p = client.get(f"/users/{uid}/progress").json()
-    assert p["workouts"] == 12
-    assert p["days_since_last_trained"]["quadriceps"] == 17
-    assert p["strength_trends"]["standing military press"]["trend"] == "stalled"
-
-
 def test_progress_without_workouts(client):
-    uid = client.post("/users", json=USER).json()["id"]
-    assert client.get(f"/users/{uid}/progress").json()["workouts"] == 0
+    assert client.get("/me/progress", headers=auth(client)).json()["workouts"] == 0
 
 
-def test_workout_volume_and_calorie_estimate(client):
-    uid = client.post("/users", json=USER).json()["id"]
-    w = client.post(f"/users/{uid}/workouts", json=workout()).json()
-    assert w["total_volume_kg"] == 2 * 8 * 70
-    assert w["estimated_kcal"] == 390          # MET 5.0 (RPE 7) x 78 kg x 1 hour
+# ---------------- demo accounts ----------------
+def test_demo_account_has_data_and_disappears_at_logout(client):
+    r = client.post("/auth/demo")
+    assert r.status_code == 201 and r.json()["user"]["is_demo"]
+    h = {"Authorization": f"Bearer {r.json()['token']}"}
+    p = client.get("/me/progress", headers=h).json()
+    assert p["workouts"] == 12 and p["days_since_last_trained"]["quadriceps"] == 17
+    client.post("/auth/logout", headers=h)
+    with client.app.state.Session() as s:
+        assert s.scalar(select(User).where(User.is_demo)) is None
 
 
-def test_new_personal_record(client):
-    uid = client.post("/users", json=USER).json()["id"]
-    bench = lambda kg: [{"exercise_id": "Barbell_Bench_Press", "reps": 8, "weight_kg": kg}]
-    today = date.today()
-    first = client.post(f"/users/{uid}/workouts", json=workout(today - timedelta(days=4), sets=bench(70))).json()
-    assert first["new_records"] == []          # nothing to beat yet
-    better = client.post(f"/users/{uid}/workouts", json=workout(today - timedelta(days=2), sets=bench(75))).json()
-    assert better["new_records"] == ["barbell bench press - medium grip"]
-    worse = client.post(f"/users/{uid}/workouts", json=workout(today, sets=bench(60))).json()
-    assert worse["new_records"] == []
-
-
-def test_exercise_history(client):
-    uid = client.post("/users", json=USER).json()["id"]
-    client.post(f"/users/{uid}/workouts", json=workout())
-    h = client.get(f"/users/{uid}/exercise-history/Barbell_Bench_Press").json()
-    assert len(h) == 1 and h[0]["best_est_1rm_kg"] == pytest.approx(88.7)
-    assert client.get(f"/users/{uid}/exercise-history/Nope").status_code == 404
-
-
-def test_export_contains_only_own_data(client):
-    uid = client.post("/users", json=USER).json()["id"]
-    other = client.post("/users", json=USER).json()["id"]
-    client.post(f"/users/{uid}/workouts", json=workout())
-    client.post(f"/users/{other}/workouts", json=workout())
-    data = client.get(f"/users/{uid}/export").json()
-    assert data["profile"]["id"] == uid
+# ---------------- privacy ----------------
+def test_export_contains_only_own_data_and_no_password(client):
+    a, b = auth(client, "alice"), auth(client, "bob")
+    client.post("/me/workouts", headers=a, json=workout())
+    client.post("/me/workouts", headers=b, json=workout())
+    data = client.get("/me/export", headers=a).json()
+    assert data["account"]["username"] == "alice"
     assert len(data["workouts"]) == 1
+    assert "password" not in str(data)
+
+
+def test_delete_account_needs_password_and_removes_everything(client):
+    a, b = auth(client, "alice"), auth(client, "bob")
+    client.post("/me/workouts", headers=a, json=workout())
+    client.post("/me/workouts", headers=b, json=workout())
+    assert client.post("/me/delete", headers=a, json={"password": "wrong password"}).status_code == 403
+    assert client.post("/me/delete", headers=a, json={"password": PASSWORD}).status_code == 204
+    assert client.get("/me", headers=a).status_code == 401           # sessions are gone too
+    assert client.post("/auth/login", json={"username": "alice", "password": PASSWORD}).status_code == 401
+    assert len(client.get("/me/workouts", headers=b).json()) == 1     # other users untouched
+
+
+def test_ai_coach_needs_its_own_consent(client):
+    h = auth(client, ai_coach=False)
+    assert client.post("/me/coach", headers=h, json={"question": "Hi"}).status_code == 403
+    assert client.put("/me/consent", headers=h, json={"ai_coach": True}).json()["consent_ai_coach"] is True
+    assert client.post("/me/coach", headers=h, json={"question": "Hi"}).status_code == 200
+    client.put("/me/consent", headers=h, json={"ai_coach": False})
+    assert client.post("/me/coach", headers=h, json={"question": "Hi"}).status_code == 403
+
+
+# ---------------- AI coach ----------------
+def demo_headers(client):
+    return {"Authorization": f"Bearer {client.post('/auth/demo').json()['token']}"}
 
 
 def test_coach_gets_progress_but_no_personal_details(client, llm):
-    uid = client.post("/demo-users/legs_neglected").json()["id"]
-    r = client.post(f"/users/{uid}/coach", json={"question": "Which muscles am I neglecting?"})
-    assert r.status_code == 200
-    assert r.json()["answer"] == "Train your legs."
+    h = demo_headers(client)
+    username = client.get("/me", headers=h).json()["username"]
+    r = client.post("/me/coach", headers=h, json={"question": "Which muscles am I neglecting?"})
+    assert r.status_code == 200 and r.json()["answer"] == "Train your legs."
     assert set(r.json()["context"]) == {"goal", "experience", "key_findings", "progress"}
 
     system = llm.calls[0][0]["content"]
     assert '"quadriceps": 17' in system                        # the computed numbers are there
-    for personal in ['"age"', '"gender"', '"height_cm"', '"weight_kg"', '"id"']:
+    for personal in ['"age"', '"gender"', '"height_cm"', '"weight_kg"', '"username"', username]:
         assert personal not in system
 
 
-def test_coach_follow_up_includes_history(client, llm):
-    uid = client.post("/demo-users/legs_neglected").json()["id"]
-    history = [{"role": "user", "content": "Am I improving?"}, {"role": "assistant", "content": "Yes."}]
-    client.post(f"/users/{uid}/coach", json={"question": "On which lift?", "history": history})
-    roles = [m["role"] for m in llm.calls[0]]
-    assert roles == ["system", "user", "assistant", "user"]
-
-
-def test_coach_logs_every_answer(client, tmp_path):
-    uid = client.post("/demo-users/legs_neglected").json()["id"]
-    client.post(f"/users/{uid}/coach", json={"question": "Am I improving?"})
-    lines = (tmp_path / "coach_log.jsonl").read_text().splitlines()
-    assert len(lines) == 1 and '"Am I improving?"' in lines[0]
-
-
-def test_coach_unavailable_gives_clear_error(tmp_path):
-    with make_client(tmp_path, FakeLLM(fail=True)) as c:
-        uid = c.post("/users", json=USER).json()["id"]
-        r = c.post(f"/users/{uid}/coach", json={"question": "Hi"})
-    assert r.status_code == 503 and "Ollama" in r.json()["detail"]
-
-
-def test_empty_question_rejected(client):
-    uid = client.post("/users", json=USER).json()["id"]
-    assert client.post(f"/users/{uid}/coach", json={"question": ""}).status_code == 422
-
-
 def test_coach_key_findings_are_calculated_by_code(client):
-    uid = client.post("/demo-users/legs_neglected").json()["id"]
-    findings = client.post(f"/users/{uid}/coach", json={"question": "What next?"}).json()["context"]["key_findings"]
+    findings = client.post("/me/coach", headers=demo_headers(client),
+                           json={"question": "What next?"}).json()["context"]["key_findings"]
     assert findings["neglected_muscles"]["quadriceps"] == 17
     assert findings["stalled_lifts"] == ["standing military press"]
     assert "triceps pushdown" in findings["improving_lifts"]
@@ -231,3 +319,69 @@ def test_coach_prompt_v1_has_no_key_findings():
     summary = {"workouts": 1, "days_since_last_trained": {}, "strength_trends": {}}
     assert "key_findings" not in build_context("build muscle", "beginner", summary, version="v1")
     assert "key_findings" in build_context("build muscle", "beginner", summary, version="v2")
+
+
+def test_coach_follow_up_includes_history(client, llm):
+    history = [{"role": "user", "content": "Am I improving?"}, {"role": "assistant", "content": "Yes."}]
+    client.post("/me/coach", headers=demo_headers(client), json={"question": "On which lift?", "history": history})
+    assert [m["role"] for m in llm.calls[0]] == ["system", "user", "assistant", "user"]
+
+
+def test_coach_logs_every_answer(client, tmp_path):
+    client.post("/me/coach", headers=demo_headers(client), json={"question": "Am I improving?"})
+    lines = (tmp_path / "coach_log.jsonl").read_text().splitlines()
+    assert len(lines) == 1 and '"Am I improving?"' in lines[0]
+
+
+def test_coach_unavailable_gives_clear_error(tmp_path):
+    with make_client(tmp_path, FakeLLM(fail=True)) as c:
+        r = c.post("/me/coach", headers=auth(c), json={"question": "Hi"})
+    assert r.status_code == 503 and "Ollama" in r.json()["detail"]
+
+
+def test_empty_question_rejected(client):
+    assert client.post("/me/coach", headers=auth(client), json={"question": ""}).status_code == 422
+
+
+# ---------------- admin ----------------
+def test_admin_pages_are_for_admins_only(client):
+    h = auth(client)
+    for path in ["/admin/users", "/admin/stats", "/admin/audit"]:
+        assert client.get(path, headers=h).status_code == 403
+
+
+def test_admin_sees_accounts_but_no_training_or_body_data(client):
+    admin = make_admin(client)
+    h = auth(client, "alice")
+    client.post("/me/workouts", headers=h, json=workout())
+    users = client.get("/admin/users", headers=admin).json()
+    alice = next(u for u in users if u["username"] == "alice")
+    assert alice["workouts"] == 1
+    for private in ["age", "weight_kg", "height_cm", "gender", "goal", "sets", "password_hash"]:
+        assert private not in alice
+    assert client.get("/admin/stats", headers=admin).json()["accounts"] == 2
+
+
+def test_admin_can_promote_unlock_and_delete_with_audit_trail(client):
+    admin = make_admin(client)
+    auth(client, "alice")
+    alice_id = next(u["id"] for u in client.get("/admin/users", headers=admin).json() if u["username"] == "alice")
+    for _ in range(5):
+        client.post("/auth/login", json={"username": "alice", "password": "wrong password"})
+    assert client.post("/auth/login", json={"username": "alice", "password": PASSWORD}).status_code == 429
+    client.post(f"/admin/users/{alice_id}/unlock", headers=admin)
+    assert client.post("/auth/login", json={"username": "alice", "password": PASSWORD}).status_code == 200
+
+    assert client.put(f"/admin/users/{alice_id}/role", headers=admin, json={"role": "admin"}).json()["role"] == "admin"
+    assert client.delete(f"/admin/users/{alice_id}", headers=admin).status_code == 204
+    actions = [(a["action"], a["target"]) for a in client.get("/admin/audit", headers=admin).json()]
+    assert ("delete_account", "alice") in actions and ("unlock", "alice") in actions
+    assert ("set_role_admin", "alice") in actions and ("account_locked", "") in actions
+
+
+def test_there_is_always_an_admin(client):
+    admin = make_admin(client)
+    me = client.get("/me", headers=admin).json()
+    assert client.put(f"/admin/users/{me['id']}/role", headers=admin, json={"role": "user"}).status_code == 409
+    assert client.post("/me/delete", headers=admin, json={"password": PASSWORD}).status_code == 409
+    assert client.delete(f"/admin/users/{me['id']}", headers=admin).status_code == 409

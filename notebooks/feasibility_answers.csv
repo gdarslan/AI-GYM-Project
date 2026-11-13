@@ -1,0 +1,157 @@
+condition,question,answer,seconds
+raw rows (v1),Which muscles am I neglecting?,"Based on the workout log you provided, it appears that you are neglecting the following muscles:
+
+1. **Biceps**: While you have a workout log for barbell curls, it only shows 3 sets of 8 reps, which may not be enough to adequately develop the biceps. Consider increasing the number of sets and reps, or adding other exercises like dumbbell curls or hammer curls to target the biceps from different angles.
+2. **Shoulder stabilizers**: While you have a workout log for standing military presses, it only shows 3 sets of 8 reps, which may not be enough to adequately develop the shoulder stabilizers, such as the rotator cuff muscles. Consider adding exercises like lateral raises, front raises, or rear delt flys to target these muscles.
+3. **Core**: While you have a workout log for exercises like barbell bench press and standing military presses, which do engage the core to some extent, it's not clear if you're targeting the core muscles specifically. Consider adding exercises like planks, Russian twists, or leg raises to target the core muscles.
+4. **Calves**: While you have a workout log for triceps pushdowns, which do engage the calf muscles to some extent, it's not clear if you're targeting the calf muscles specifically. Consider adding exercises like calf raises or seated calf raises to target the calf muscles.
+5. **Lower back**: While you have a workout log for bent over barbell rows, which do engage the lower back muscles to some extent, it's not clear if you're targeting the lower back muscles specifically. Consider adding exercises like deadlifts, superman rows, or hyperextensions to target the lower back muscles.
+
+It's worth noting that everyone's muscle development needs are different, and it's not always possible to identify specific muscle groups that are being neglected. However, by incorporating a variety of exercises that target different muscle groups, you can help ensure that you're developing overall muscle balance and strength.",7.4
+raw rows (v1),Am I getting stronger on bench press?,"To determine if you're getting stronger on the bench press, we'll need to analyze the data from your workout log.
+
+From the data you provided, I can see that you've been performing the barbell bench press exercise on multiple days, with different weights. Let's take a look at the weights you've been using:
+
+* On November 2, 2026, you used 77.5 kg (170.5 lbs) for 8 reps.
+* On November 6, 2026, you used 77.5 kg (170.5 lbs) for 8 reps.
+
+Since you've been using the same weight on two different days, it's difficult to say if you've increased your strength. However, we can look at the weight you used on the previous day to see if there's an upward trend.
+
+Unfortunately, I don't have the data for the previous day, so I'll assume that the weight you used on November 2 was a new personal best. If that's the case, then it's possible that you've made progress on the bench press, but we can't confirm it without more data.
+
+To get a better sense of your progress, I'd recommend tracking your workouts over a longer period, including the weights you use and the number of reps you complete. This will give you a clearer picture of your strength gains over time.
+
+Here's a suggestion:
+
+1. Keep tracking your workouts, including the weights you use and the number of reps you complete.
+2. Take progress photos and measurements to track any changes in your body composition.
+3. Consider using a weightlifting log or spreadsheet to organize your data and track your progress over time.
+
+By doing so, you'll be able to see if you're getting stronger on the bench press and make adjustments to your training program as needed.",7.0
+raw rows (v1),Which lift has stalled?,"To determine which lift has stalled, I'll need to analyze the data and identify the lifts that have shown a decrease in weight or reps over time.
+
+After analyzing the data, I noticed that the following lifts have stalled:
+
+1. **Bent Over Barbell Row**: The weight has remained the same (67.5 kg) for three consecutive workouts (2026-11-04, 2026-11-06, and 2026-11-08 is not present, but 2026-11-04 is the last one with the same weight).
+2. **Seated Cable Rows**: The weight has remained the same (62.5 kg) for three consecutive workouts (2026-11-04, 2026-11-06, and 2026-11-08 is not present, but 2026-11-04 is the last one with the same weight).
+3. **Barbell Curl**: The weight has remained the same (32.5 kg) for three consecutive workouts (2026-11-04, 2026-11-06, and 2026-11-08 is not present, but 2026-11-04 is the last one with the same weight).
+
+These lifts have shown no increase in weight or reps over the past few workouts, indicating a stall.",5.9
+raw rows (v1),"What should I focus on next week, given my goal?","Based on the workout log you provided, it appears that you're a powerlifter or a weightlifter with a focus on strength and hypertrophy.
+
+To help you plan your next week's workout, I'll need to make a few assumptions:
+
+1. You're aiming to increase your overall strength and muscle mass.
+2. You're not looking to change your workout routine drastically, but rather make adjustments to optimize your progress.
+
+Assuming these points, here are some observations and suggestions for your next week's workout:
+
+**Key observations:**
+
+* You've been doing a mix of compound exercises like bench press, rows, and shoulder presses, which is great for building overall strength and muscle mass.
+* You've also been doing some isolation exercises like triceps pushdowns, which can help with specific muscle imbalances and improve overall muscle development.
+* Your weights have been increasing over time, which is a good sign that you're making progress.
+
+**Suggestions for next week:**
+
+1. **Continue to focus on compound exercises**: Keep doing exercises like bench press, rows, and shoulder presses, as they're essential for building overall strength and muscle mass.
+2. **Increase the weight on your compound exercises**: If you're feeling strong, try increasing the weight on your compound exercises by 2.5-5kg (5-10lbs) to continue challenging yourself and promoting muscle growth.
+3. **Add more volume to your workouts**: Consider adding more sets and reps to your workouts, especially for exercises like rows and shoulder presses. This can help you build more muscle mass and increase your overall strength.
+4. **Pay attention to your form and technique**: Make sure you're maintaining proper form and technique on all exercises, especially the compound exercises. Poor form can lead to injury and reduce the effectiveness of your workouts.
+5. **Consider adding some progressive overload**: If you're feeling strong, try adding some progressive overload to your workouts by increasing the weight or reps over time. This can help you continue making progress and avoiding plateaus.
+
+**Example workout plan:**
+
+Here's an example workout plan for next week:
+
+Monday (Chest and Triceps):
+
+* Barbell bench press (3 sets of 8-12 reps)
+* Incline dumbbell press (3 sets of 10-15 reps)
+* Triceps pushdowns (3 sets of 12-15 reps)
+* Triceps dips (3 sets of 12-15 reps)
+
+Wednesday (Back and Biceps):
+
+* Bent-over barbell rows (3 sets of 8-12 reps)
+* Pull-ups (3 sets of 8-12 reps)
+* Barbell curls (3 sets of 10-12 reps)
+* Hammer curls (3 sets of 10-12 reps)
+
+Friday (Shoulders and Abs):
+
+* Standing military presses (3 sets of 8-12 reps)
+* Lateral raises (3 sets of 10-12 reps)
+* Rear delt flys (3 sets of 12-15 reps)
+* Planks (3 sets of 30-60 seconds)
+
+Remember to adjust the weights and reps based on your individual needs and goals. It's also essential to listen to your body and take rest days as needed.",10.1
+raw rows (v1),My knee hurts when I squat. What should I do?,"Knee pain when squatting can be a real bummer! Don't worry, I'm here to help you figure out what might be going on and what you can do to alleviate the discomfort.
+
+**Possible causes of knee pain when squatting:**
+
+1. **Patellofemoral pain syndrome (PFPS)**: This is a common condition that causes pain around the kneecap (patella) and can be exacerbated by squatting.
+2. **Knee joint instability**: Weak or loose ligaments in the knee joint can cause pain and instability when squatting.
+3. **Overuse or repetitive strain**: Squatting can put repetitive stress on the knee joint, leading to pain and inflammation.
+4. **Poor form or technique**: Squatting with poor form can put unnecessary stress on the knee joint, leading to pain and injury.
+5. **Underlying medical conditions**: Certain conditions, such as osteoarthritis, tendonitis, or meniscal tears, can cause knee pain when squatting.
+
+**What you can do:**
+
+1. **Take a break and rest**: Give your knee a break and avoid squatting for a while to allow it to recover.
+2. **Stretch and foam roll**: Gentle stretching and foam rolling can help alleviate tension and reduce pain. Focus on the quadriceps, hamstrings, and calf muscles.
+3. **Strengthen your core and glutes**: Weak core and glute muscles can contribute to poor form and put unnecessary stress on the knee joint. Engage in exercises that strengthen these muscles, such as planks, squats with a weight, or glute bridges.
+4. **Improve your squat form**: Focus on proper form and technique when squatting. Make sure to:
+	* Keep your back straight and core engaged
+	* Keep your knees in line with your toes
+	* Lower yourself down slowly and control the descent
+	* Push through your heels to stand up
+5. **Consider physical therapy or a sports massage**: A professional can help you identify the underlying cause of your knee pain and provide personalized guidance and treatment.
+6. **Modify your squatting routine**: If you're new to squatting or have been doing it for a while, try modifying your routine to reduce the stress on your knee joint. For example, try:
+	* Squatting with a shorter range of motion
+	* Using a lighter weight or resistance band
+	* Incorporating exercises that strengthen the knee joint, such as leg press or leg extensions
+
+**When to seek medical attention:**
+
+If you experience any of the following, seek medical attention:
+
+* Sudden, severe pain or swelling in the knee
+* Difficulty walking or bearing weight on the knee
+* Instability or feeling of the knee giving way
+* Redness, warmth, or swelling around the knee
+
+Remember, it's always better to err on the side of caution when it comes to knee pain. If you're unsure about what's causing your knee pain or how to alleviate it, consult with a healthcare professional or a qualified fitness expert for personalized guidance.",9.4
+summary (v1),Which muscles am I neglecting?,"Based on the training data, you are neglecting the ""abdominals"" muscle group, as indicated by a volume share percentage of 0.0 for the entire period and the last 2 weeks.",3.4
+summary (v1),Am I getting stronger on bench press?,"According to the data, your 1-rep max (Epley formula) for the barbell bench press increased from 88.7 kg in the first week to 98.2 kg in the last week, with a change percentage of 10.7%. This indicates that you are getting stronger on the bench press.",3.2
+summary (v1),Which lift has stalled?,"According to the training data, the ""standing military press"" has stalled, with a trend of ""stalled"" and a last done days ago of 3.",2.8
+summary (v1),"What should I focus on next week, given my goal?","Based on your goal to ""build muscle"" and the training data, I would recommend focusing on the muscle groups with the highest volume share percentage last 2 weeks, which are:
+
+* Shoulders (25.3%)
+* Triceps (18.7%)
+* Biceps (12.9%)
+
+These muscle groups have been prioritized in your recent workouts, and increasing their volume could help you make progress towards your goal.",3.4
+summary (v1),My knee hurts when I squat. What should I do?,"I'm not a medical professional, and I don't have the necessary training to provide personalized advice on knee pain. I recommend consulting a doctor or physiotherapist for proper evaluation and guidance on managing knee pain. They can assess your specific situation and provide personalized recommendations.",3.0
+summary + findings (v2),Which muscles am I neglecting?,"According to the key findings, you are neglecting the following muscle groups:
+
+* Lower back (17 days since last trained)
+* Quadriceps (17 days since last trained)
+* Hamstrings (17 days since last trained)
+* Glutes (17 days since last trained)
+* Calves (17 days since last trained)
+
+These muscle groups have not been trained for 10 or more days.",3.8
+summary + findings (v2),Am I getting stronger on bench press?,"According to the data, your 1-rep max (Epley formula) for the barbell bench press - medium grip increased from 88.7 kg in the first week to 98.2 kg in the last week, with a change of 10.7%. This indicates that you are indeed getting stronger on the bench press.",3.2
+summary + findings (v2),Which lift has stalled?,"According to the training data, the ""standing military press"" has stalled. It has been done for 3 days ago, and its trend is ""stalled"".",2.9
+summary + findings (v2),"What should I focus on next week, given my goal?","Given your goal to build muscle, I recommend focusing on the neglected muscle groups next week. According to the data, the neglected muscle groups are:
+
+* Lower back
+* Quadriceps
+* Hamstrings
+* Glutes
+* Calves
+* Abdominals
+
+These muscle groups have not been trained for 10 or more days, indicating a need for attention. Focus on incorporating exercises that target these muscle groups into your workout routine next week.",3.5
+summary + findings (v2),My knee hurts when I squat. What should I do?,"I can't provide medical or injury advice. If you're experiencing knee pain, I recommend consulting a doctor or physiotherapist for personalized guidance.",2.8
