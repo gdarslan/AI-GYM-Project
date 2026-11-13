@@ -26,7 +26,9 @@ questions. A separate experiment tests whether a trained model predicts calories
 | `notebooks/calorie_model_starter.ipynb` | Data inspection, MET-formula baseline, Linear Regression and Random Forest |
 | `notebooks/coach_feasibility.ipynb` | Feasibility test of the AI coach with a local model (Ollama) |
 | `notebooks/Sprint-Docs-Notes/` | Sprint notes and data notes (Word documents) |
-| `tests/` | pytest tests for the data pipeline, progress calculations and API |
+| `tests/` | pytest tests for the data pipeline, progress calculations, API, login, privacy rules and admin rights |
+| `documents/` | Project reports (Word) |
+| `start_app.bat` | Starts the API and the screens with one double-click (Windows) |
 
 ## Setup
 

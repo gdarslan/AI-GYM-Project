@@ -240,6 +240,15 @@ def test_exercise_search_is_public(client):
     assert set(by_muscle) == {"barbell squat", "leg press"}
 
 
+@pytest.mark.parametrize("path, params", [("/me/progress", {"weeks": 0}), ("/me/progress", {"weeks": -3}),
+                                           ("/me/progress", {"weeks": 53}), ("/exercises", {"limit": -1}),
+                                           ("/exercises", {"limit": 0}), ("/exercises", {"limit": 101})])
+def test_out_of_range_query_values_rejected(client, path, params):
+    h = auth(client)
+    client.post("/me/workouts", headers=h, json=workout())      # a workout today: weeks=0 used to divide by zero
+    assert client.get(path, headers=h, params=params).status_code == 422
+
+
 def test_progress_without_workouts(client):
     assert client.get("/me/progress", headers=auth(client)).json()["workouts"] == 0
 

@@ -1,7 +1,7 @@
 """The AI coach: the code calculates the user's progress, a language model explains it.
 
-Only the goal, experience level and computed progress numbers are sent to the model - never the user id,
-age, height, weight or gender (data minimisation). The model runs locally through Ollama by default.
+Only the goal, experience level and computed progress numbers are sent to the model - never the username,
+user id, age, height, weight or gender (data minimisation). The model runs locally through Ollama by default.
 """
 import json
 import os

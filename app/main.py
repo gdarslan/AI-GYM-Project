@@ -1,7 +1,8 @@
 """Gym Coach API. Run from the project root:  python -m uvicorn app.main:app --reload
 
 Interactive docs: http://localhost:8000/docs
-Every endpoint except /health, /exercises and /auth/* needs a login token ("Authorization: Bearer <token>").
+Every endpoint except /health, /exercises, /auth/register, /auth/login and /auth/demo needs a login token
+("Authorization: Bearer <token>").
 Users only ever reach their own data through /me/...; admins manage accounts but cannot see training data.
 """
 import secrets
@@ -10,7 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -168,8 +169,9 @@ def add_routes(api: FastAPI) -> None:
         return {"status": "ok"}
 
     @api.get("/exercises", response_model=list[ExerciseOut])
-    def search_exercises(search: str = "", limit: int = 20, s: Session = Depends(get_session)):
-        q = select(Exercise).order_by(Exercise.name).limit(min(limit, 100))
+    def search_exercises(search: str = Query("", max_length=100), limit: int = Query(20, ge=1, le=100),
+                         s: Session = Depends(get_session)):
+        q = select(Exercise).order_by(Exercise.name).limit(limit)
         for word in search.lower().split():
             q = q.where(or_(Exercise.name.contains(word), Exercise.primary_muscles.contains(word)))
         return s.scalars(q).all()
@@ -311,7 +313,7 @@ def add_routes(api: FastAPI) -> None:
 
     # ---- my progress ----
     @api.get("/me/progress")
-    def progress(today: date | None = None, weeks: int = 4, user: User = Depends(current_user),
+    def progress(today: date | None = None, weeks: int = Query(4, ge=1, le=52), user: User = Depends(current_user),
                  s: Session = Depends(get_session)):
         return user_progress(s, user, today, weeks)
 
@@ -391,8 +393,9 @@ def add_routes(api: FastAPI) -> None:
         s.commit()
 
     @api.get("/admin/audit", response_model=list[AuditOut])
-    def admin_audit(limit: int = 100, admin: User = Depends(current_admin), s: Session = Depends(get_session)):
-        return s.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(min(limit, 500))).all()
+    def admin_audit(limit: int = Query(100, ge=1, le=500), admin: User = Depends(current_admin),
+                    s: Session = Depends(get_session)):
+        return s.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(limit)).all()
 
 
 app = create_app()
