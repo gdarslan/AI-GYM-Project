@@ -124,6 +124,7 @@ class ExerciseOut(BaseModel):
     equipment: str
     level: str
     category: str
+    description: str | None = None
 
 
 # ---------------- coach ----------------
@@ -134,7 +135,8 @@ class ChatTurn(BaseModel):
 
 class CoachIn(BaseModel):
     question: str = Field(min_length=1, max_length=500)
-    history: list[ChatTurn] = Field(default=[], max_length=20)
+    conversation_id: int | None = None   # continue a saved conversation; empty = start a new one
+    history: list[ChatTurn] = Field(default=[], max_length=20)     # only used without a conversation_id
 
 
 class CoachOut(BaseModel):
@@ -142,6 +144,56 @@ class CoachOut(BaseModel):
     model: str
     prompt_version: str
     context: dict                        # exactly what the model was given
+    conversation_id: int
+    message_id: int
+    latency_ms: int
+
+
+FeedbackReason = Literal["wrong facts", "not relevant", "unsafe advice", "unclear", "other"]
+
+
+class FeedbackIn(BaseModel):
+    rating: Literal[1, -1]
+    reason: FeedbackReason | None = None
+    comment: str | None = Field(default=None, max_length=500)
+
+
+class FeedbackOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    rating: int
+    reason: str | None
+    comment: str | None
+
+
+class MessageOut(BaseModel):
+    id: int
+    time: datetime
+    role: Literal["user", "assistant"]
+    content: str
+    model: str | None = None
+    prompt_version: str | None = None
+    latency_ms: int | None = None
+    context: dict | None = None
+    feedback: FeedbackOut | None = None
+
+
+class ConversationOut(BaseModel):
+    id: int
+    started_at: datetime
+    title: str
+    messages: int
+
+
+class CoachQualityOut(BaseModel):
+    """Totals per model and prompt version; no questions, answers or users."""
+    model: str
+    prompt_version: str
+    answers: int
+    rated: int
+    helpful: int
+    not_helpful: int
+    avg_latency_ms: int | None
+    reasons: dict
 
 
 # ---------------- admin ----------------

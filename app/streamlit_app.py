@@ -37,7 +37,9 @@ so the app only stores it with your explicit consent (GDPR art. 9(2)(a)).
 
 **The AI coach (optional, separate consent):** only your goal, experience level and the progress numbers the app
 calculated are given to a language model. The model runs on this computer, so nothing is sent to another company.
-Questions and answers are saved without your username, to evaluate how well the coach works.
+Your conversations with the coach are saved in your account, so you can read them again and rate
+the answers; you can delete any conversation, and all of them go when you delete your account. Admins
+only see totals (how many answers, how many rated helpful), never the conversations.
 
 **Who can see your data:** only you. Admins see account details (username, role, dates, number of workouts), never
 your workouts or body data.
@@ -442,7 +444,8 @@ def log_workout_page():
         for i, name in enumerate(names):
             e = library[name]
             cols[i % 2].markdown(ui.exercise_card(name, e["primary_muscles"], e["secondary_muscles"], e["equipment"],
-                                                  e["level"], e["category"], last_session_text(e["id"])),
+                                                  e["level"], e["category"], last_session_text(e["id"]),
+                                                  e.get("description")),
                                  unsafe_allow_html=True)
 
     a, b = st.columns([1, 3])
@@ -493,6 +496,32 @@ def history_page():
                 st.rerun()
 
 
+FEEDBACK_REASONS = ["wrong facts", "not relevant", "unsafe advice", "unclear", "other"]
+
+
+def answer_feedback(m: dict):
+    """Thumbs up or down under an answer; a thumbs down asks why. Stored with the answer."""
+    fb = m.get("feedback")
+    if fb:
+        why = f" ({fb['reason']})" if fb.get("reason") else ""
+        icon = ":material/thumb_up:" if fb["rating"] > 0 else ":material/thumb_down:"
+        st.caption(f"{icon} You rated this answer {'helpful' if fb['rating'] > 0 else 'not helpful'}{why}. Thanks!")
+        return
+    vote = st.feedback("thumbs", key=f"vote_{m['id']}")
+    if vote == 1:
+        if api("PUT", f"/me/coach/messages/{m['id']}/feedback", json={"rating": 1}):
+            st.rerun()
+    elif vote == 0:
+        with st.form(f"why_{m['id']}", border=False):
+            a, b = st.columns([1, 2])
+            reason = a.selectbox("What was wrong?", FEEDBACK_REASONS)
+            comment = b.text_input("Comment (optional)", max_chars=500)
+            if st.form_submit_button("Send feedback"):
+                if api("PUT", f"/me/coach/messages/{m['id']}/feedback",
+                       json={"rating": -1, "reason": reason, "comment": comment or None}):
+                    st.rerun()
+
+
 def coach_page():
     ui.page_header("Coach", "Ask about your own training. The app calculates; the AI explains.")
     if not me["consent_ai_coach"]:
@@ -501,48 +530,69 @@ def coach_page():
             if api("PUT", "/me/consent", json={"ai_coach": True}):
                 st.rerun()
         return
-    chat = st.session_state.setdefault("chat", [])
     avatars = {"user": ":material/person:", "assistant": ":material/fitness_center:"}
+    convs = api("GET", "/me/conversations") or []
+    cid = st.session_state.get("conv_id")
+    if cid not in {c["id"] for c in convs}:
+        cid = st.session_state.conv_id = None
 
-    if not chat:
-        st.markdown('<div class="gc-panel">Your coach reads the progress numbers the app calculated for you: '
-                    'neglected muscles, strength trends and recovery. It runs on this computer and does not give '
-                    'medical advice. Pick a question or type your own.</div>', unsafe_allow_html=True)
-        st.write("")
-    for turn in chat:
-        with st.chat_message(turn["role"], avatar=avatars[turn["role"]]):
-            st.markdown(turn["content"])
-
-    question = st.chat_input("Ask your coach…")
-    if not chat:
-        for row in (SUGGESTED_QUESTIONS[:2], SUGGESTED_QUESTIONS[2:]):
-            for col, q in zip(st.columns(2), row):
-                if col.button(q, width="stretch", icon=":material/chat_bubble:"):
-                    question = q
-
-    if question:
-        with st.chat_message("user", avatar=avatars["user"]):
-            st.markdown(question)
-        with st.chat_message("assistant", avatar=avatars["assistant"]), \
-                st.spinner("Thinking… (the first answer can take a while)"):
-            reply = api("POST", "/me/coach", timeout=300,
-                        json={"question": question, "history": [{"role": t["role"], "content": t["content"]}
-                                                                for t in chat]})
-        if reply:
-            chat += [{"role": "user", "content": question}, {"role": "assistant", "content": reply["answer"]}]
-            st.session_state.coach_meta = reply
+    side, main = st.columns([1, 3], gap="large")
+    with side:
+        if st.button("New conversation", icon=":material/add_comment:", width="stretch", type="primary"):
+            st.session_state.conv_id = None
             st.rerun()
+        if convs:
+            ui.section("Your conversations")
+        for c in convs[:15]:
+            title = c["title"] if len(c["title"]) <= 32 else c["title"][:31] + "…"
+            if st.button(title, key=f"conv_{c['id']}", width="stretch",
+                         icon=":material/chat:" if c["id"] == cid else ":material/chat_bubble_outline:"):
+                st.session_state.conv_id = c["id"]
+                st.rerun()
 
-    meta = st.session_state.get("coach_meta")
-    if chat and st.button("New conversation", icon=":material/refresh:"):
-        chat.clear()
-        st.rerun()
-    if meta:
-        with st.expander("What the coach sees", icon=":material/visibility:"):
-            st.caption(f"Model: {meta['model']} · prompt {meta['prompt_version']}. "
-                       "No username, age, height, weight or gender is sent.")
-            st.json(meta["context"], expanded=False)
+    with main:
+        messages = api("GET", f"/me/conversations/{cid}") if cid else []
+        if not messages:
+            st.markdown('<div class="gc-panel">Your coach reads the progress numbers the app calculated for you: '
+                        'neglected muscles, strength trends and recovery. It runs on this computer and does not give '
+                        'medical advice. Pick a question or type your own.</div>', unsafe_allow_html=True)
+            st.write("")
+            for row in (SUGGESTED_QUESTIONS[:2], SUGGESTED_QUESTIONS[2:]):
+                for col, q in zip(st.columns(2), row):
+                    if col.button(q, width="stretch", icon=":material/chat_bubble:"):
+                        st.session_state.ask = q
+                        st.rerun()
+        for m in messages or []:
+            with st.chat_message(m["role"], avatar=avatars[m["role"]]):
+                st.markdown(m["content"])
+                if m["role"] == "assistant":
+                    seconds = f" · {m['latency_ms'] / 1000:.1f} s" if m.get("latency_ms") is not None else ""
+                    st.caption(f"{m.get('model') or '?'} · prompt {m.get('prompt_version') or '?'}{seconds}")
+                    answer_feedback(m)
+                    if m.get("context"):
+                        with st.expander("What the coach saw", icon=":material/visibility:"):
+                            st.caption("No username, age, height, weight or gender is sent to the model.")
+                            st.json(m["context"], expanded=False)
+        if cid and st.button("Delete this conversation", icon=":material/delete:"):
+            if api("DELETE", f"/me/conversations/{cid}"):
+                st.session_state.conv_id = None
+                st.rerun()
+
+        question = st.session_state.pop("ask", None)
+        if question:
+            with st.chat_message("user", avatar=avatars["user"]):
+                st.markdown(question)
+            with st.chat_message("assistant", avatar=avatars["assistant"]), \
+                    st.spinner("Thinking… (the first answer can take a while)"):
+                reply = api("POST", "/me/coach", timeout=300, json={"question": question, "conversation_id": cid})
+            if reply:
+                st.session_state.conv_id = reply["conversation_id"]
+                st.rerun()
     st.caption("The coach can make mistakes. For pain or injuries, see a doctor or physiotherapist.")
+    typed = st.chat_input("Ask your coach…")
+    if typed:
+        st.session_state.ask = typed
+        st.rerun()
 
 
 def profile_page():
@@ -642,6 +692,19 @@ def admin_page():
                          icon=":material/person_remove:"):
                 if api("DELETE", f"/admin/users/{target['id']}"):
                     st.rerun()
+
+    ui.section("Coach quality")
+    st.caption("How users rate the coach's answers, per model and prompt version. Totals only: admins never see "
+               "the questions, the answers or who asked them.")
+    quality = api("GET", "/admin/coach-quality") or []
+    if quality:
+        q = pd.DataFrame(quality)
+        q["helpful %"] = (q["helpful"] / q["rated"].where(q["rated"] > 0) * 100).round(0)
+        q["reasons"] = q["reasons"].map(lambda r: ", ".join(f"{k}: {v}" for k, v in r.items()) or "–")
+        st.dataframe(q[["model", "prompt_version", "answers", "rated", "helpful", "not_helpful", "helpful %",
+                        "avg_latency_ms", "reasons"]], width="stretch", hide_index=True)
+    else:
+        st.info("No coach answers yet.")
 
     ui.section("Audit log")
     st.caption("Account events and admin actions. Contains usernames, never training data.")

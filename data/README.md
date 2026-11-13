@@ -40,6 +40,6 @@ Run from the project root:
 | `calories_training.csv` | `exercise.csv` + `calories.csv` | 15,000 | Training the calorie models (secondary experiment) |
 | `gym_members_training_format.csv` | Gym Members | 973 | Transfer test (has no body temperature) |
 | `free_exercise_db.csv` | free-exercise-db | 876 | The app's exercise library and muscle mapping for the progress analysis (primary and secondary muscles) |
-| `megagym_exercises.csv` | megaGym | 2,909 | Muscle mapping (backup table: one primary muscle per exercise, same muscle names as the main table) |
+| `megagym_exercises.csv` | megaGym | 2,909 | Exercise descriptions in the app (190 library exercises with the same name) and backup muscle mapping |
 
 The cleaning choices are documented in `src/data_prep.py` and in `notebooks/Sprint-Docs-Notes/`.

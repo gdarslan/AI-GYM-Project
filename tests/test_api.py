@@ -44,7 +44,7 @@ def make_client(tmp_path, llm):
     pd.DataFrame([(i, n, p, s, "barbell", "beginner", "strength") for i, n, p, s in EXERCISES],
                  columns=["exercise_id", "name", "primary_muscles", "secondary_muscles",
                           "equipment", "level", "category"]).to_csv(csv, index=False)
-    return TestClient(create_app("sqlite://", csv, llm=llm, coach_log=tmp_path / "coach_log.jsonl"))
+    return TestClient(create_app("sqlite://", csv, llm=llm, descriptions_csv=None))
 
 
 @pytest.fixture
@@ -336,10 +336,72 @@ def test_coach_follow_up_includes_history(client, llm):
     assert [m["role"] for m in llm.calls[0]] == ["system", "user", "assistant", "user"]
 
 
-def test_coach_logs_every_answer(client, tmp_path):
-    client.post("/me/coach", headers=demo_headers(client), json={"question": "Am I improving?"})
-    lines = (tmp_path / "coach_log.jsonl").read_text().splitlines()
-    assert len(lines) == 1 and '"Am I improving?"' in lines[0]
+def test_coach_conversation_is_saved_and_continued(client, llm):
+    h = demo_headers(client)
+    first = client.post("/me/coach", headers=h, json={"question": "Am I improving?"}).json()
+    assert first["latency_ms"] >= 0
+    client.post("/me/coach", headers=h, json={"question": "On which lift?", "conversation_id": first["conversation_id"]})
+    # the second call got the first question and answer as history, from the database
+    assert [m["role"] for m in llm.calls[1]] == ["system", "user", "assistant", "user"]
+    convs = client.get("/me/conversations", headers=h).json()
+    assert len(convs) == 1 and convs[0]["messages"] == 4 and convs[0]["title"] == "Am I improving?"
+    msgs = client.get(f"/me/conversations/{first['conversation_id']}", headers=h).json()
+    answer = msgs[1]
+    assert answer["role"] == "assistant" and answer["model"] == "fake-model" and answer["prompt_version"] == "v2"
+    assert answer["context"]["key_findings"]["neglected_muscles"]["quadriceps"] == 17
+
+
+def test_coach_feedback_and_quality_summary(client):
+    h = demo_headers(client)
+    mid = client.post("/me/coach", headers=h, json={"question": "Am I improving?"}).json()["message_id"]
+    r = client.put(f"/me/coach/messages/{mid}/feedback", headers=h,
+                   json={"rating": -1, "reason": "wrong facts", "comment": "military press is not improving"})
+    assert r.status_code == 200 and r.json()["reason"] == "wrong facts"
+    client.put(f"/me/coach/messages/{mid}/feedback", headers=h, json={"rating": 1})      # rating again replaces it
+    assert client.put(f"/me/coach/messages/{mid}/feedback", headers=h, json={"rating": 5}).status_code == 422
+    admin = make_admin(client)
+    quality = client.get("/admin/coach-quality", headers=admin).json()
+    assert quality == [{"model": "fake-model", "prompt_version": "v2", "answers": 1, "rated": 1, "helpful": 1,
+                        "not_helpful": 0, "avg_latency_ms": quality[0]["avg_latency_ms"], "reasons": {}}]
+    assert "military press" not in str(quality)                       # totals only, never the content
+
+
+def test_conversations_are_private(client):
+    a, b = demo_headers(client), demo_headers(client)
+    first = client.post("/me/coach", headers=a, json={"question": "Am I improving?"}).json()
+    cid, mid = first["conversation_id"], first["message_id"]
+    assert client.get(f"/me/conversations/{cid}", headers=b).status_code == 404
+    assert client.post("/me/coach", headers=b, json={"question": "Hi", "conversation_id": cid}).status_code == 404
+    assert client.put(f"/me/coach/messages/{mid}/feedback", headers=b, json={"rating": 1}).status_code == 404
+    assert client.delete(f"/me/conversations/{cid}", headers=b).status_code == 404
+    assert client.delete(f"/me/conversations/{cid}", headers=a).status_code == 204
+    assert client.get("/me/conversations", headers=a).json() == []
+
+
+def test_conversations_in_export_and_deleted_with_account(client):
+    h = auth(client)
+    client.post("/me/workouts", headers=h, json=workout())
+    client.post("/me/coach", headers=h, json={"question": "Am I improving?"})
+    assert client.get("/me/export", headers=h).json()["coach_conversations"][0]["title"] == "Am I improving?"
+    client.post("/me/delete", headers=h, json={"password": PASSWORD})
+    from app.db import CoachMessage
+    with client.app.state.Session() as s:
+        assert s.scalars(select(CoachMessage)).all() == []
+
+
+def test_exercise_descriptions_from_megagym(tmp_path):
+    desc = tmp_path / "megagym.csv"
+    pd.DataFrame([("barbell squat", "A compound lower-body movement with a barbell on the back."),
+                  ("unknown lift", "Not in the library, so not used.")],
+                 columns=["name", "description"]).to_csv(desc, index=False)
+    csv = tmp_path / "exercises.csv"
+    pd.DataFrame([(i, n, p, s, "barbell", "beginner", "strength") for i, n, p, s in EXERCISES],
+                 columns=["exercise_id", "name", "primary_muscles", "secondary_muscles",
+                          "equipment", "level", "category"]).to_csv(csv, index=False)
+    with TestClient(create_app("sqlite://", csv, llm=FakeLLM(), descriptions_csv=desc)) as c:
+        found = {e["name"]: e["description"] for e in c.get("/exercises", params={"limit": 100}).json()}
+    assert found["barbell squat"].startswith("A compound")
+    assert found["leg press"] is None
 
 
 def test_coach_unavailable_gives_clear_error(tmp_path):

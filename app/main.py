@@ -5,7 +5,9 @@ Every endpoint except /health, /exercises, /auth/register, /auth/login and /auth
 ("Authorization: Bearer <token>").
 Users only ever reach their own data through /me/...; admins manage accounts but cannot see training data.
 """
+import json
 import secrets
+import time as clock
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -17,11 +19,12 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app import security
-from app.db import (DB_URL, EXERCISES_CSV, AuditLog, AuthSession, Exercise, User, Workout, WorkoutSet, init_db,
-                    make_engine)
-from app.schemas import (CONSENT_VERSION, AccountOut, AuditOut, CoachIn, CoachOut, ConsentIn, ExerciseOut, LoginIn,
-                         MeOut, PasswordChangeIn, PasswordConfirmIn, ProfileIn, RegisterIn, RoleIn, SetOut, TokenOut,
-                         WorkoutIn, WorkoutOut)
+from app.db import (DB_URL, DESCRIPTIONS_CSV, EXERCISES_CSV, AuditLog, AuthSession, CoachConversation, CoachFeedback,
+                    CoachMessage, Exercise, User, Workout, WorkoutSet, init_db, make_engine)
+from app.schemas import (CONSENT_VERSION, AccountOut, AuditOut, CoachIn, CoachOut, CoachQualityOut, ConsentIn,
+                         ConversationOut, ExerciseOut, FeedbackIn, FeedbackOut, LoginIn, MeOut, MessageOut,
+                         PasswordChangeIn, PasswordConfirmIn, ProfileIn, RegisterIn, RoleIn, SetOut, TokenOut, WorkoutIn,
+                         WorkoutOut)
 from src import coach
 from src.calories import estimate_kcal
 from src.personas import legs_neglected
@@ -38,12 +41,14 @@ def now() -> datetime:
 
 
 def create_app(db_url: str = DB_URL, exercises_csv: Path = EXERCISES_CSV, llm: coach.LLMClient | None = None,
-               coach_log: Path | None = coach.LOG_FILE) -> FastAPI:
+               coach_log: Path | None = None, descriptions_csv: Path | None = DESCRIPTIONS_CSV) -> FastAPI:
+    """coach_log: an extra JSONL file of every answer, for evaluation runs only; the app itself stores the
+    conversations in the database, linked to the account, so users can see and delete them."""
     engine = make_engine(db_url)
 
     @asynccontextmanager
     async def lifespan(_):
-        init_db(engine, exercises_csv)     # tables + exercise library, on startup
+        init_db(engine, exercises_csv, descriptions_csv)     # tables + exercise library, on startup
         yield
 
     api = FastAPI(title="AI Gym Coach", lifespan=lifespan)
@@ -134,6 +139,20 @@ def workout_out(w: Workout, records: list[str] | None = None) -> WorkoutOut:
                                    reps=st.reps, weight_kg=st.weight_kg) for st in w.sets],
                       total_volume_kg=sum(st.reps * st.weight_kg for st in w.sets),
                       estimated_kcal=kcal, new_records=records or [])
+
+
+def message_out(m: CoachMessage) -> MessageOut:
+    return MessageOut(id=m.id, time=m.time, role=m.role, content=m.content, model=m.model,
+                      prompt_version=m.prompt_version, latency_ms=m.latency_ms,
+                      context=json.loads(m.context) if m.context else None,
+                      feedback=FeedbackOut.model_validate(m.feedback) if m.feedback else None)
+
+
+def own_conversation(s: Session, user: User, conversation_id: int) -> CoachConversation:
+    conv = s.get(CoachConversation, conversation_id)
+    if conv is None or conv.user_id != user.id:          # someone else's conversation looks the same as none
+        raise HTTPException(404, "Conversation not found")
+    return conv
 
 
 def set_rows(workouts) -> pd.DataFrame:
@@ -282,7 +301,10 @@ def add_routes(api: FastAPI) -> None:
         return {"exported_at": now().isoformat(timespec="seconds") + "Z",
                 "account": MeOut.model_validate(user).model_dump(mode="json"),
                 "workouts": [workout_out(w).model_dump(mode="json", exclude={"new_records"})
-                             for w in sorted(user.workouts, key=lambda w: w.date)]}
+                             for w in sorted(user.workouts, key=lambda w: w.date)],
+                "coach_conversations": [{"started_at": c.started_at.isoformat(), "title": c.title,
+                                         "messages": [message_out(m).model_dump(mode="json") for m in c.messages]}
+                                        for c in user.conversations]}
 
     @api.post("/me/delete", status_code=204)
     def delete_me(data: PasswordConfirmIn, user: User = Depends(current_user), s: Session = Depends(get_session)):
@@ -337,14 +359,56 @@ def add_routes(api: FastAPI) -> None:
         require_profile(user)
         if not user.consent_ai_coach:
             raise HTTPException(403, "You have not agreed to use the AI coach. You can switch it on under Privacy.")
+        conv = own_conversation(s, user, data.conversation_id) if data.conversation_id else None
+        history = ([{"role": m.role, "content": m.content} for m in conv.messages] if conv
+                   else [t.model_dump() for t in data.history])
         context = coach.build_context(user.goal, user.experience, user_progress(s, user))
         llm = request.app.state.llm
+        started = clock.perf_counter()
         try:
-            answer = coach.ask(data.question, context, llm, [t.model_dump() for t in data.history],
-                               log_file=request.app.state.coach_log)
+            answer = coach.ask(data.question, context, llm, history, log_file=request.app.state.coach_log)
         except coach.CoachUnavailable as e:
             raise HTTPException(503, str(e))
-        return CoachOut(answer=answer, model=llm.model, prompt_version=coach.PROMPT_VERSION, context=context)
+        latency = round((clock.perf_counter() - started) * 1000)
+        if conv is None:
+            conv = CoachConversation(user=user, started_at=now(), title=data.question[:120])
+            s.add(conv)
+        conv.messages.append(CoachMessage(time=now(), role="user", content=data.question))
+        reply = CoachMessage(time=now(), role="assistant", content=answer, model=llm.model,
+                             prompt_version=coach.PROMPT_VERSION, latency_ms=latency, context=json.dumps(context))
+        conv.messages.append(reply)
+        s.commit()
+        return CoachOut(answer=answer, model=llm.model, prompt_version=coach.PROMPT_VERSION, context=context,
+                        conversation_id=conv.id, message_id=reply.id, latency_ms=latency)
+
+    @api.get("/me/conversations", response_model=list[ConversationOut])
+    def list_conversations(user: User = Depends(current_user)):
+        return [ConversationOut(id=c.id, started_at=c.started_at, title=c.title, messages=len(c.messages))
+                for c in sorted(user.conversations, key=lambda c: c.started_at, reverse=True)]
+
+    @api.get("/me/conversations/{conversation_id}", response_model=list[MessageOut])
+    def read_conversation(conversation_id: int, user: User = Depends(current_user),
+                          s: Session = Depends(get_session)):
+        return [message_out(m) for m in own_conversation(s, user, conversation_id).messages]
+
+    @api.delete("/me/conversations/{conversation_id}", status_code=204)
+    def delete_conversation(conversation_id: int, user: User = Depends(current_user),
+                            s: Session = Depends(get_session)):
+        s.delete(own_conversation(s, user, conversation_id))
+        s.commit()
+
+    @api.put("/me/coach/messages/{message_id}/feedback", response_model=FeedbackOut)
+    def rate_answer(message_id: int, data: FeedbackIn, user: User = Depends(current_user),
+                    s: Session = Depends(get_session)):
+        """Rate one of the coach's answers. Rating again replaces the earlier rating."""
+        message = s.get(CoachMessage, message_id)
+        if message is None or message.conversation.user_id != user.id or message.role != "assistant":
+            raise HTTPException(404, "Answer not found")
+        fb = message.feedback or CoachFeedback(message=message, created_at=now())
+        fb.rating, fb.reason, fb.comment = data.rating, data.reason, data.comment
+        s.add(fb)
+        s.commit()
+        return fb
 
     # ---- admin: accounts only, never training data ----
     def target_user(s: Session, user_id: int) -> User:
@@ -367,7 +431,35 @@ def add_routes(api: FastAPI) -> None:
             return s.scalar(select(func.count()).select_from(model).where(*where))
         return {"accounts": count(User), "admins": count(User, User.role == "admin"),
                 "demo_accounts": count(User, User.is_demo), "workouts": count(Workout),
-                "active_sessions": count(AuthSession, AuthSession.expires_at > now())}
+                "active_sessions": count(AuthSession, AuthSession.expires_at > now()),
+                "coach_answers": count(CoachMessage, CoachMessage.role == "assistant"),
+                "rated_answers": count(CoachFeedback)}
+
+    @api.get("/admin/coach-quality", response_model=list[CoachQualityOut])
+    def admin_coach_quality(admin: User = Depends(current_admin), s: Session = Depends(get_session)):
+        """How the coach is rated, per model and prompt version. Totals only: an admin never sees questions,
+        answers or who asked them."""
+        rows = s.execute(select(CoachMessage.model, CoachMessage.prompt_version, CoachMessage.latency_ms,
+                                CoachFeedback.rating, CoachFeedback.reason)
+                         .outerjoin(CoachFeedback, CoachFeedback.message_id == CoachMessage.id)
+                         .where(CoachMessage.role == "assistant")).all()
+        groups: dict = {}
+        for model, version, latency, rating, reason in rows:
+            g = groups.setdefault((model or "?", version or "?"), {"answers": 0, "rated": 0, "helpful": 0,
+                                                                   "not_helpful": 0, "latencies": [], "reasons": {}})
+            g["answers"] += 1
+            if latency is not None:
+                g["latencies"].append(latency)
+            if rating is not None:
+                g["rated"] += 1
+                g["helpful" if rating > 0 else "not_helpful"] += 1
+            if reason:
+                g["reasons"][reason] = g["reasons"].get(reason, 0) + 1
+        return [CoachQualityOut(model=m, prompt_version=v, answers=g["answers"], rated=g["rated"],
+                                helpful=g["helpful"], not_helpful=g["not_helpful"],
+                                avg_latency_ms=round(sum(g["latencies"]) / len(g["latencies"])) if g["latencies"]
+                                else None, reasons=g["reasons"])
+                for (m, v), g in sorted(groups.items())]
 
     @api.put("/admin/users/{user_id}/role", response_model=AccountOut)
     def admin_set_role(user_id: int, data: RoleIn, admin: User = Depends(current_admin),

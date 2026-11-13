@@ -257,7 +257,7 @@ def _muscles(text: str) -> list[str]:
 
 
 def exercise_card(name: str, primary: str, secondary: str, equipment: str, level: str, category: str,
-                  last_time: str) -> str:
+                  last_time: str, description: str | None = None) -> str:
     """One exercise: a small front and back map (main muscles bright red, helpers lighter) and its details."""
     main, helpers = _muscles(primary), _muscles(secondary)
     share = {m: (100 if m in main else 40 if m in helpers else 0) for m in DRAWN_MUSCLES}
@@ -273,4 +273,7 @@ def exercise_card(name: str, primary: str, secondary: str, equipment: str, level
             f'<div style="min-width:0;"><div style="font-weight:600;color:{TEXT};text-transform:capitalize;'
             f'margin-bottom:6px;">{html.escape(name)}</div><div style="margin-bottom:6px;">{chips}</div>'
             f'<div class="gc-muted" style="text-transform:capitalize;">{meta}</div>'
-            f'<div class="gc-muted" style="margin-top:4px;">{html.escape(last_time)}</div></div></div>')
+            f'<div class="gc-muted" style="margin-top:4px;">{html.escape(last_time)}</div>'
+            + (f'<div class="gc-muted" style="margin-top:6px;font-size:.8rem;line-height:1.35;">'
+               f'{html.escape(description[:220] + ("…" if len(description) > 220 else ""))}</div>' if description else "")
+            + '</div></div>')

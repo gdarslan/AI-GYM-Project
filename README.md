@@ -9,7 +9,7 @@ questions. A separate experiment tests whether a trained model predicts calories
 | Path | Contents |
 |---|---|
 | `app/main.py` | FastAPI backend: login, my account and data, workouts, progress, coach, admin |
-| `app/db.py` | SQLite database tables (accounts, sessions, audit log, workouts); loads the exercise library |
+| `app/db.py` | SQLite tables: accounts, sessions, audit log, workouts, exercises, coach conversations, messages and feedback |
 | `app/security.py` | Password hashing (PBKDF2), password rules and session tokens |
 | `app/schemas.py` | Input validation (impossible values are rejected) |
 | `app/streamlit_app.py` | The screens: login, progress, log workout, history, coach, profile, privacy, admin |
@@ -77,8 +77,9 @@ AI coach; download and delete your data on the *Privacy & account* page; passwor
 and the API listens on localhost).
 
 The Coach page needs [Ollama](https://ollama.com) running with the model downloaded once:
-`ollama pull llama3.2:3b`. Every coach question and answer is logged to `logs/coach_log.jsonl` (not committed)
-for the evaluation.
+`ollama pull llama3.2:3b`. Conversations are saved per account with the model, prompt version, response time and the
+exact data the model was given, and users can rate each answer. Admins see only totals per model and prompt version
+(*Coach quality* on the Admin page). Conversations are deleted with the account.
 
 ## Tests
 
