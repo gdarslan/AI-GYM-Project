@@ -20,6 +20,12 @@ EXERCISES = [
     ("Romanian_Deadlift", "romanian deadlift", "hamstrings", "calves; glutes; lower back"),
     ("Leg_Press", "leg press", "quadriceps", "calves; glutes; hamstrings"),
 ]
+# exercises that are not logged as sets x reps x kg: (id, name, primary, secondary, equipment, category)
+OTHER_KINDS = [
+    ("Bicycling_Stationary", "bicycling, stationary", "quadriceps", "calves; glutes; hamstrings", "machine", "cardio"),
+    ("Plank", "plank", "abdominals", "", "body only", "strength"),
+    ("Pushups", "pushups", "chest", "shoulders; triceps", "body only", "strength"),
+]
 PROFILE = {"age": 24, "gender": "male", "height_cm": 180, "weight_kg": 78,
            "goal": "build muscle", "experience": "intermediate"}
 PASSWORD = "correct horse battery"
@@ -41,7 +47,8 @@ class FakeLLM:
 
 def make_client(tmp_path, llm):
     csv = tmp_path / "exercises.csv"
-    pd.DataFrame([(i, n, p, s, "barbell", "beginner", "strength") for i, n, p, s in EXERCISES],
+    pd.DataFrame([(i, n, p, s, "barbell", "beginner", "strength") for i, n, p, s in EXERCISES]
+                 + [(i, n, p, s, eq, "beginner", cat) for i, n, p, s, eq, cat in OTHER_KINDS],
                  columns=["exercise_id", "name", "primary_muscles", "secondary_muscles",
                           "equipment", "level", "category"]).to_csv(csv, index=False)
     return TestClient(create_app("sqlite://", csv, llm=llm, descriptions_csv=None))
@@ -237,7 +244,7 @@ def test_exercise_search_is_public(client):
     names = [e["name"] for e in client.get("/exercises", params={"search": "bench"}).json()]
     assert names == ["barbell bench press - medium grip"]
     by_muscle = [e["name"] for e in client.get("/exercises", params={"search": "quadriceps"}).json()]
-    assert set(by_muscle) == {"barbell squat", "leg press"}
+    assert set(by_muscle) == {"barbell squat", "leg press", "bicycling, stationary"}
 
 
 @pytest.mark.parametrize("path, params", [("/me/progress", {"weeks": 0}), ("/me/progress", {"weeks": -3}),
@@ -469,7 +476,7 @@ def test_workout_keeps_start_time_and_focus(client):
 
 
 def test_whole_exercise_library_can_be_listed(client):
-    assert len(client.get("/exercises", params={"limit": 1000}).json()) == len(EXERCISES)
+    assert len(client.get("/exercises", params={"limit": 1000}).json()) == len(EXERCISES) + len(OTHER_KINDS)
 
 
 def test_older_database_gets_new_columns_without_losing_data(tmp_path):
@@ -526,3 +533,36 @@ def test_weekly_summary_is_saved_as_a_conversation(client, llm):
     assert "weekly summary" in llm.calls[0][-1]["content"].lower()
     conv = client.get("/me/conversations", headers=h).json()[0]
     assert conv["title"].startswith("Weekly summary") and conv["id"] == r.json()["conversation_id"]
+
+
+def test_each_exercise_has_a_kind(client):
+    kinds = {e["name"]: e["kind"] for e in client.get("/exercises", params={"limit": 1000}).json()}
+    assert kinds["bicycling, stationary"] == "cardio" and kinds["plank"] == "timed"
+    assert kinds["pushups"] == "bodyweight" and kinds["barbell squat"] == "weighted"
+
+
+def test_cardio_holds_and_bodyweight_are_logged_their_own_way(client):
+    h = auth(client)                                                     # body weight 78 kg
+    r = client.post("/me/workouts", headers=h, json=workout(duration_min=60, rpe=7, sets=[
+        {"exercise_id": "Bicycling_Stationary", "duration_s": 1800, "level": 8},
+        {"exercise_id": "Plank", "duration_s": 45}, {"exercise_id": "Plank", "duration_s": 45},
+        {"exercise_id": "Pushups", "reps": 15}]))
+    assert r.status_code == 201, r.text
+    w = r.json()
+    bike = w["sets"][0]
+    assert (bike["kind"], bike["reps"], bike["duration_s"], bike["level"]) == ("cardio", 0, 1800, 8)
+    assert w["total_volume_kg"] == round(15 * 0.65 * 78, 1)            # push-ups count part of body weight
+    # 30 min cycling at MET 10 + 30 min resistance at MET 5 (RPE 7), 78 kg
+    assert w["estimated_kcal"] == round(10 * 78 * 0.5 + 5 * 78 * 0.5)
+    p = client.get("/me/progress", headers=h).json()
+    assert p["cardio_minutes"] == 30 and p["days_since_last_trained"]["quadriceps"] == 0
+
+
+@pytest.mark.parametrize("bad_set, message", [
+    ({"exercise_id": "Bicycling_Stationary", "reps": 10}, "minutes"),
+    ({"exercise_id": "Plank", "reps": 3}, "seconds"),
+    ({"exercise_id": "Pushups", "duration_s": 60}, "rep"),
+])
+def test_wrong_fields_for_the_kind_are_rejected(client, bad_set, message):
+    r = client.post("/me/workouts", headers=auth(client), json=workout(sets=[bad_set]))
+    assert r.status_code == 422 and message in r.json()["detail"]

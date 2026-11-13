@@ -5,8 +5,8 @@ import pytest
 
 from src.personas import legs_neglected
 from src.calories import estimate_kcal, met_for_rpe
-from src.progress import (consistency, estimated_1rm, exercise_history, neglected_muscles, new_records,
-                          next_session_targets, progress_summary, recovery_status)
+from src.progress import (consistency, estimated_1rm, exercise_history, exercise_kind, neglected_muscles,
+                          new_records, next_session_targets, progress_summary, recovery_status)
 
 TODAY = date(2026, 11, 9)
 
@@ -156,3 +156,47 @@ def test_week_streak():
     assert consistency(dates, 3, TODAY) == {"weekly_target": 3, "this_week": 0, "week_streak": 4}
     assert consistency(dates, 4, TODAY)["week_streak"] == 0
     assert consistency(dates + [TODAY], 1, TODAY) == {"weekly_target": 1, "this_week": 1, "week_streak": 5}
+
+
+def test_exercise_kind_from_the_dataset():
+    assert exercise_kind("bicycling", "cardio", "other") == "cardio"
+    assert exercise_kind("hamstring stretch", "stretching", "body only") == "timed"
+    assert exercise_kind("plank", "strength", "body only") == "timed"            # a hold, by its name
+    assert exercise_kind("pushups", "strength", "body only") == "bodyweight"
+    assert exercise_kind("barbell squat", "strength", "barbell") == "weighted"
+
+
+KIND_EXERCISES = pd.DataFrame([
+    ("pushups", "chest", "shoulders; triceps", "bodyweight"),
+    ("bicycling, stationary", "quadriceps", "calves", "cardio"),
+    ("plank", "abdominals", "", "timed"),
+], columns=["name", "primary_muscles", "secondary_muscles", "kind"])
+
+
+def kind_log(rows):
+    return pd.DataFrame(rows, columns=["date", "exercise", "reps", "weight_kg", "duration_s", "level"])
+
+
+def test_bodyweight_counts_part_of_body_weight():
+    log = kind_log([("2026-11-02", "pushups", 10, 0, None, None), ("2026-11-06", "pushups", 15, 0, None, None)])
+    out = progress_summary(log, KIND_EXERCISES, TODAY, body_weight_kg=80)
+    assert out["volume_share_pct"]["chest"] > 0
+    assert out["strength_trends"]["pushups"]["est_1rm_last_week_kg"] == round(52 * 1.5, 1)   # 0.65 x 80 kg
+
+
+def test_cardio_and_holds_add_time_not_volume():
+    log = kind_log([("2026-11-06", "bicycling, stationary", 0, 0, 2400, 6), ("2026-11-06", "plank", 0, 0, 60, None)])
+    out = progress_summary(log, KIND_EXERCISES, TODAY, body_weight_kg=80)
+    assert out["cardio_minutes"] == 40 and out["cardio_sessions"] == 1
+    assert out["days_since_last_trained"]["quadriceps"] == 3 and out["strength_trends"] == {}
+
+
+def test_targets_for_cardio_and_holds():
+    log = kind_log([("2026-11-06", "bicycling, stationary", 0, 0, 1800, 6),
+                    ("2026-11-06", "plank", 0, 0, 45, None), ("2026-11-06", "plank", 0, 0, 50, None)])
+    t = {x["exercise"]: x for x in next_session_targets(log, KIND_EXERCISES, "build muscle", TODAY)}
+    assert (t["bicycling, stationary"]["minutes"], t["bicycling, stationary"]["level"]) == (35, 6)
+    assert t["plank"]["target"] == "2 × 50 s"                              # shortest hold + 5 s
+    long_ride = kind_log([("2026-11-06", "bicycling, stationary", 0, 0, 2700, 6)])
+    t = next_session_targets(long_ride, KIND_EXERCISES, "build muscle", TODAY)[0]
+    assert (t["minutes"], t["level"]) == (45, 7)                           # 45 minutes: one level harder

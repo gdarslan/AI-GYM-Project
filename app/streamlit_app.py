@@ -258,6 +258,7 @@ def progress_page():
                c.get("this_week", 0) >= target),
               ("Week streak", c.get("week_streak", 0), f"weeks in a row with {target}+ sessions",
                c.get("week_streak", 0) > 0),
+              ("Cardio", f"{p.get('cardio_minutes', 0)} min", f"{p.get('cardio_sessions', 0)} sessions", False),
               ("Muscles to train", len(gaps), "not trained for 10+ days", bool(gaps))])
     if not p.get("enough_data"):
         st.info(f"You have logged {p['workouts']} workout{'s' if p['workouts'] != 1 else ''}. Trends, neglected "
@@ -302,13 +303,13 @@ def progress_page():
     ui.section("Next session")
     targets = api("GET", "/me/next-session") or []
     if targets:
-        st.dataframe(pd.DataFrame(targets)[["exercise", "last", "sets", "reps", "weight_kg", "reason"]],
+        st.dataframe(pd.DataFrame(targets)[["exercise", "last", "target", "reason"]],
                      width="stretch", hide_index=True, column_config={
-                         "exercise": "Exercise", "last": "Last time", "sets": "Sets", "reps": "Target reps",
-                         "weight_kg": st.column_config.NumberColumn("Target (kg)", format="%.1f"),
+                         "exercise": "Exercise", "last": "Last time", "target": "Next time",
                          "reason": st.column_config.TextColumn("Why", width="large")})
-        st.caption(f"Double progression for your goal ({me['goal']}): add a rep each session; at the top of the rep "
-                   "range, add weight. These targets are filled in when you add the exercise on Log workout.")
+        st.caption(f"Weights: double progression for your goal ({me['goal']}): add a rep each session; at the top of "
+                   "the rep range, add weight. Holds: +5 seconds. Cardio: +5 minutes, or one level harder from 45 "
+                   "minutes. These targets are filled in when you add the exercise on Log workout.")
     else:
         st.caption("No exercises done in the last 10 days.")
 
@@ -344,14 +345,30 @@ def progress_page():
                             width="stretch")
 
 
-FOCUS_OPTIONS = ["chest", "back", "shoulders", "arms", "legs", "core", "full body"]
+FOCUS_OPTIONS = ["chest", "back", "shoulders", "arms", "legs", "core", "cardio", "full body"]
 MAX_PICKS = 15          # exercises added in one go
 MAX_SETS = 100          # the API accepts at most 100 sets per workout
-PLAN_COLUMNS = {"exercise": "object", "sets": "int64", "reps": "int64", "weight_kg": "float64"}
+BODYWEIGHT_SHARE = 0.65  # same assumption as src/progress.py
+
+# One table per way of logging; each exercise goes to the table of its kind (worked out from the dataset).
+TABLES = {
+    "strength": {"title": "Weights and bodyweight", "kinds": ("weighted", "bodyweight"),
+                 "columns": {"exercise": "object", "sets": "int64", "reps": "int64", "weight_kg": "float64"}},
+    "holds": {"title": "Holds and stretches", "kinds": ("timed",),
+              "columns": {"exercise": "object", "sets": "int64", "seconds": "int64"}},
+    "cardio": {"title": "Cardio", "kinds": ("cardio",),
+               "columns": {"exercise": "object", "minutes": "int64", "level": "int64"}},
+}
+LOGGED_AS = {"weighted": "sets × reps × kg", "bodyweight": "sets × reps (0 kg = bodyweight)",
+             "timed": "sets × seconds", "cardio": "minutes at a level (1–10)"}
 
 
-def empty_plan() -> pd.DataFrame:
-    return pd.DataFrame({c: pd.Series(dtype=t) for c, t in PLAN_COLUMNS.items()})
+def table_for(kind: str) -> str:
+    return next(t for t, spec in TABLES.items() if kind in spec["kinds"])
+
+
+def empty_table(t: str) -> pd.DataFrame:
+    return pd.DataFrame({c: pd.Series(dtype=d) for c, d in TABLES[t]["columns"].items()})
 
 
 def exercise_library() -> dict:
@@ -361,27 +378,67 @@ def exercise_library() -> dict:
     return st.session_state.library
 
 
-def current_plan() -> pd.DataFrame:
-    """The workout table including edits the user made in it since the last save of the plan."""
-    df = st.session_state.get("plan", empty_plan()).copy().reset_index(drop=True)
-    changes = st.session_state.get("plan_editor") or {}
+def current_table(t: str) -> pd.DataFrame:
+    """A workout table including the edits the user made in it since it was last rebuilt."""
+    df = st.session_state.get(f"plan_{t}", empty_table(t)).copy().reset_index(drop=True)
+    changes = st.session_state.get(f"editor_{t}") or {}
     for i, cols in changes.get("edited_rows", {}).items():
         for col, value in cols.items():
             df.loc[int(i), col] = value
     df = df.drop(index=[i for i in changes.get("deleted_rows", []) if i in df.index])
-    added = pd.DataFrame(changes.get("added_rows", []), columns=list(PLAN_COLUMNS))
+    added = pd.DataFrame(changes.get("added_rows", []), columns=list(TABLES[t]["columns"]))
     return pd.concat([df, added], ignore_index=True) if not added.empty else df.reset_index(drop=True)
 
 
-def add_to_plan(names: list[str], targets: dict):
-    """Add exercises to today's list, filled in with the next-session target when there is one."""
-    rows = pd.DataFrame([{"exercise": n, "sets": targets.get(n, {}).get("sets", 3),
-                          "reps": targets.get(n, {}).get("reps", 8),
-                          "weight_kg": float(targets.get(n, {}).get("weight_kg", 0.0))} for n in names])
-    st.session_state.plan = pd.concat([current_plan(), rows], ignore_index=True)
-    st.session_state.pop("plan_editor", None)      # the table is rebuilt from the new plan
+def set_tables(new_rows: dict[str, list[dict]]):
+    """Append rows to the tables and rebuild them."""
+    for t in TABLES:
+        current = current_table(t)
+        if new_rows.get(t):
+            current = pd.concat([current, pd.DataFrame(new_rows[t])], ignore_index=True)
+        st.session_state[f"plan_{t}"] = current
+        st.session_state.pop(f"editor_{t}", None)
+
+
+def clear_tables():
+    for t in TABLES:
+        st.session_state[f"plan_{t}"] = empty_table(t)
+        st.session_state.pop(f"editor_{t}", None)
+
+
+def new_row(name: str, kind: str, target: dict) -> dict:
+    """A row for today's list, filled in with the next-session target when there is one."""
+    if kind == "cardio":
+        return {"exercise": name, "minutes": int(target.get("minutes") or 20), "level": int(target.get("level") or 5)}
+    if kind == "timed":
+        return {"exercise": name, "sets": int(target.get("sets") or 3), "seconds": int(target.get("seconds") or 30)}
+    return {"exercise": name, "sets": int(target.get("sets") or 3),
+            "reps": int(target.get("reps") or (10 if kind == "bodyweight" else 8)),
+            "weight_kg": float(target.get("weight_kg") or 0.0)}
+
+
+def add_to_plan(names: list[str], targets: dict, library: dict):
+    rows: dict[str, list] = {}
+    for n in names:
+        kind = library[n]["kind"]
+        rows.setdefault(table_for(kind), []).append(new_row(n, kind, targets.get(n, {})))
+    set_tables(rows)
     st.session_state.add_round = st.session_state.get("add_round", 0) + 1     # empties the pick lists
     st.rerun()
+
+
+def describe_sets(sets: list[dict]) -> str:
+    """'3 × 8 @ 77.5 kg', '3 × 15 (bodyweight)', '3 × 45 s' or '30 min @ level 6'."""
+    if not sets:
+        return ""
+    if sets[0].get("kind") == "cardio" or any(s.get("level") for s in sets):
+        minutes = round(sum(s.get("duration_s") or 0 for s in sets) / 60)
+        return f"{minutes} min @ level {sets[0].get('level') or '?'}"
+    if any(s.get("duration_s") for s in sets):
+        return f"{len(sets)} × {min(s.get('duration_s') or 0 for s in sets)} s"
+    top = max(s["weight_kg"] for s in sets)
+    reps = min(s["reps"] for s in sets if s["weight_kg"] == top)
+    return f"{len(sets)} × {reps} " + (f"@ {top:g} kg" if top else "(bodyweight)")
 
 
 def last_session_text(exercise_id):
@@ -389,8 +446,7 @@ def last_session_text(exercise_id):
     if not history:
         return "First time logging this exercise."
     last = history[-1]
-    sets = ", ".join(f"{s['reps']}×{s['weight_kg']:g} kg" for s in last["sets"])
-    return f"Last time ({last['date']}): {sets}"
+    return f"Last time ({last['date']}): {describe_sets(last['sets'])}"
 
 
 def log_workout_page():
@@ -406,12 +462,18 @@ def log_workout_page():
     library = exercise_library()
     workouts = api("GET", "/me/workouts") or []
     targets = {t["exercise"]: t for t in api("GET", "/me/next-session") or []}
-    times_done = {}
-    for w in workouts:
+    times_done, last_sets = {}, {}
+    for w in workouts:                                   # newest first
         for s in w["sets"]:
             times_done[s["exercise"]] = times_done.get(s["exercise"], 0) + 1
-            if s["exercise"] not in targets:             # newest first: an older exercise keeps its last weight
-                targets[s["exercise"]] = {"weight_kg": s["weight_kg"]}
+            if s["exercise"] not in last_sets:
+                last_sets[s["exercise"]] = [x for x in w["sets"] if x["exercise"] == s["exercise"]]
+    for name, sets in last_sets.items():                 # older exercises: start from what was done last time
+        if name not in targets:
+            s0 = sets[0]
+            targets[name] = {"sets": len(sets), "reps": s0["reps"], "weight_kg": s0["weight_kg"],
+                             "seconds": s0.get("duration_s"), "level": s0.get("level"),
+                             "minutes": round((s0.get("duration_s") or 0) / 60) or None}
 
     # ---- the session ----
     ui.section("Session")
@@ -429,15 +491,18 @@ def log_workout_page():
         muscles = {m for f in focus for m in ui.FOCUS_GROUPS.get(f, [])}
         if "full body" in focus:
             muscles = {m for group in ui.FOCUS_GROUPS.values() for m in group}
-        if not muscles:
-            st.caption("Pick the focus of the day above to see exercises for those muscles.")
+        if not muscles and "cardio" not in focus:
+            st.caption("Pick the focus of the day above to see exercises for it.")
         else:
-            def trains(e):
-                return any(m in muscles for m in e["primary_muscles"].split("; "))
-            yours = sorted((n for n in times_done if n in library and trains(library[n])), key=lambda n: -times_done[n])
-            common = [n for n, e in library.items() if trains(e) and n not in yours and e["category"] == "strength"
-                      and e["equipment"] in ("barbell", "dumbbell", "cable", "machine", "body only")
-                      and e["level"] in ("beginner", "intermediate")]
+            def fits(e):
+                if e["kind"] == "cardio":
+                    return "cardio" in focus
+                return e["kind"] != "timed" and any(m in muscles for m in e["primary_muscles"].split("; "))
+            yours = sorted((n for n in times_done if n in library and fits(library[n])), key=lambda n: -times_done[n])
+            common = [n for n, e in library.items() if fits(e) and n not in yours and (
+                e["kind"] == "cardio" or (e["category"] == "strength" and e["level"] in ("beginner", "intermediate")
+                                          and e["equipment"] in ("barbell", "dumbbell", "cable", "machine",
+                                                                 "body only")))]
             picks = st.multiselect("Exercises for " + ", ".join(focus), yours + common,
                                    format_func=lambda n: f"★ {n}" if n in yours else n,
                                    placeholder="Choose one or more (★ = you did it before)",
@@ -445,24 +510,23 @@ def log_workout_page():
             if len(picks) > MAX_PICKS:
                 st.warning(f"That is {len(picks)} exercises. Add at most {MAX_PICKS} at a time.")
             if st.button("Add to workout", key="add_suggested", type="primary",
-                         disabled=not picks or len(picks) > MAX_PICKS,
-                         icon=":material/playlist_add:"):
-                add_to_plan(picks, targets)
+                         disabled=not picks or len(picks) > MAX_PICKS, icon=":material/playlist_add:"):
+                add_to_plan(picks, targets, library)
     with search_tab:
-        query = st.text_input("Search exercise or muscle", placeholder="e.g. bench, squat, biceps")
+        query = st.text_input("Search exercise or muscle", placeholder="e.g. bench, bike, plank, biceps")
         words = query.lower().split()
         hits = [n for n, e in library.items()
                 if words and all(w in n or w in e["primary_muscles"] for w in words)][:60]
         picks = st.multiselect("Results", hits, placeholder="Choose one or more",
+                               format_func=lambda n: f"{n}  ·  {LOGGED_AS[library[n]['kind']]}",
                                key=f"search_{st.session_state.get('add_round', 0)}") if words else []
         if len(picks) > MAX_PICKS:
             st.warning(f"That is {len(picks)} exercises. Add at most {MAX_PICKS} at a time.")
         if words and not hits:
             st.info("No exercise found. Try a shorter word.")
         if st.button("Add to workout", key="add_searched", type="primary",
-                     disabled=not picks or len(picks) > MAX_PICKS,
-                     icon=":material/playlist_add:"):
-            add_to_plan(picks, targets)
+                     disabled=not picks or len(picks) > MAX_PICKS, icon=":material/playlist_add:"):
+            add_to_plan(picks, targets, library)
     with copy_tab:
         if not workouts:
             st.caption("No earlier workouts yet.")
@@ -471,67 +535,102 @@ def log_workout_page():
                 f"{w['date']}{' ' + w['start_time'][:5] if w.get('start_time') else ''} · "
                 f"{w.get('focus') or 'no focus'} · {len({s['exercise'] for s in w['sets']})} exercises"))
             if st.button("Copy its exercises", icon=":material/content_copy:"):
-                grouped = pd.DataFrame(past["sets"]).groupby("exercise", sort=False).agg(
-                    sets=("reps", "size"), reps=("reps", "first"), weight_kg=("weight_kg", "max")).reset_index()
-                st.session_state.plan = pd.concat([current_plan(), grouped], ignore_index=True)
-                st.session_state.pop("plan_editor", None)
+                rows: dict[str, list] = {}
+                for name in dict.fromkeys(s["exercise"] for s in past["sets"]):
+                    sets = [s for s in past["sets"] if s["exercise"] == name]
+                    kind = sets[0]["kind"]
+                    copied = {"sets": len(sets), "reps": sets[0]["reps"],
+                              "weight_kg": max(s["weight_kg"] for s in sets),
+                              "seconds": min(s.get("duration_s") or 30 for s in sets), "level": sets[0].get("level"),
+                              "minutes": round(sum(s.get("duration_s") or 0 for s in sets) / 60) or None}
+                    rows.setdefault(table_for(kind), []).append(new_row(name, kind, copied))
+                set_tables(rows)
                 st.rerun()
 
-    # ---- the list ----
+    # ---- the lists ----
     ui.section("Today's workout")
-    plan = st.session_state.get("plan", empty_plan())
-    edited = st.data_editor(plan, key="plan_editor", num_rows="dynamic", hide_index=True, width="stretch",
-                            column_config={
-                                "exercise": st.column_config.SelectboxColumn("Exercise", options=sorted(library),
-                                                                             required=True, width="large"),
-                                "sets": st.column_config.NumberColumn("Sets", min_value=1, max_value=10, step=1,
-                                                                      default=3, required=True),
-                                "reps": st.column_config.NumberColumn("Reps", min_value=1, max_value=100, step=1,
-                                                                      default=8, required=True),
-                                "weight_kg": st.column_config.NumberColumn("Weight (kg)", min_value=0.0,
-                                                                           max_value=500.0, step=2.5, default=0.0,
-                                                                           format="%.1f")})
-    rows = edited.dropna(subset=["exercise"])
-    rows = rows[rows["exercise"].isin(library)]
-    if rows.empty:
-        st.caption("Add exercises above, or click the empty row of the table to type one in. "
-                   "Weight 0 means bodyweight; you can change every number in the table.")
+    edited = {}
+    for t, spec in TABLES.items():
+        df = st.session_state.get(f"plan_{t}", empty_table(t))
+        if t != "strength" and df.empty and not st.session_state.get(f"editor_{t}"):
+            continue
+        options = sorted(n for n, e in library.items() if e["kind"] in spec["kinds"])
+        config = {"exercise": st.column_config.SelectboxColumn("Exercise", options=options, required=True,
+                                                               width="large")}
+        if t == "strength":
+            config |= {"sets": st.column_config.NumberColumn("Sets", min_value=1, max_value=10, step=1, default=3,
+                                                             required=True),
+                       "reps": st.column_config.NumberColumn("Reps", min_value=1, max_value=100, step=1, default=8,
+                                                             required=True),
+                       "weight_kg": st.column_config.NumberColumn("kg (0 = bodyweight)", min_value=0.0,
+                                                                  max_value=500.0, step=2.5, default=0.0,
+                                                                  format="%.1f")}
+        elif t == "holds":
+            config |= {"sets": st.column_config.NumberColumn("Sets", min_value=1, max_value=10, step=1, default=3,
+                                                             required=True),
+                       "seconds": st.column_config.NumberColumn("Seconds per set", min_value=5, max_value=600,
+                                                                step=5, default=30, required=True)}
+        else:
+            config |= {"minutes": st.column_config.NumberColumn("Minutes", min_value=1, max_value=300, step=1,
+                                                                default=20, required=True),
+                       "level": st.column_config.NumberColumn("Level (1–10)", min_value=1, max_value=10, step=1,
+                                                              default=5, required=True)}
+        st.markdown(f"**{spec['title']}** · <span class='gc-muted'>{' / '.join(LOGGED_AS[k] for k in spec['kinds'])}"
+                    f"</span>", unsafe_allow_html=True)
+        out = st.data_editor(df, key=f"editor_{t}", num_rows="dynamic", hide_index=True, width="stretch",
+                             column_config=config)
+        out = out.dropna(subset=["exercise"])
+        edited[t] = out[out["exercise"].isin(options)]
+
+    strength = edited.get("strength", empty_table("strength"))
+    holds = edited.get("holds", empty_table("holds"))
+    cardio = edited.get("cardio", empty_table("cardio"))
+    names = list(dict.fromkeys([*strength["exercise"], *holds["exercise"], *cardio["exercise"]]))
+    if not names:
+        st.caption("Add exercises above, or click the empty row of the table to type one in. Cardio and holds get "
+                   "their own table with minutes or seconds when you add them.")
         return
-    n_sets = int(rows["sets"].fillna(0).sum())
-    volume = float((rows["sets"].fillna(0) * rows["reps"].fillna(0) * rows["weight_kg"].fillna(0)).sum())
-    kcal = estimate_kcal(me["weight_kg"], duration, rpe)
-    ui.cards([("Exercises", len(rows), ", ".join(focus) or "no focus chosen", False),
+
+    n_sets = int(strength["sets"].fillna(0).sum() + holds["sets"].fillna(0).sum()) + len(cardio)
+    bw_part = BODYWEIGHT_SHARE * (me["weight_kg"] or 0)
+    volume = float(sum((r.sets or 0) * (r.reps or 0) * ((r.weight_kg or 0) + (
+        bw_part if library[r.exercise]["kind"] == "bodyweight" else 0)) for r in strength.itertuples()))
+    cardio_parts = [(float(r.minutes or 0), int(r.level or 5)) for r in cardio.itertuples()]
+    kcal = estimate_kcal(me["weight_kg"], duration, rpe, cardio_parts)
+    ui.cards([("Exercises", len(names), ", ".join(focus) or "no focus chosen", False),
               ("Sets", n_sets, "in this workout", False),
-              ("Volume", f"{volume:,.0f} kg", "reps × weight", False),
+              ("Cardio", f"{sum(m for m, _ in cardio_parts):.0f} min", "minutes at your levels", False),
+              ("Volume", f"{volume:,.0f} kg", "reps × weight (bodyweight ≈ 65%)", False),
               ("Calories", f"≈{kcal}" if kcal else "–", "MET-formula estimate", False)])
 
     with st.expander("About these exercises", expanded=True, icon=":material/info:"):
-        names = list(dict.fromkeys(rows["exercise"]))
         cols = st.columns(2)
         for i, name in enumerate(names):
             e = library[name]
             cols[i % 2].markdown(ui.exercise_card(name, e["primary_muscles"], e["secondary_muscles"], e["equipment"],
                                                   e["level"], e["category"], last_session_text(e["id"]),
-                                                  e.get("description")),
+                                                  e.get("description"), LOGGED_AS[e["kind"]]),
                                  unsafe_allow_html=True)
 
     a, b = st.columns([1, 3])
     if a.button("Clear list", icon=":material/delete_sweep:", width="stretch"):
-        st.session_state.plan = empty_plan()
-        st.session_state.pop("plan_editor", None)
+        clear_tables()
         st.rerun()
     if n_sets > MAX_SETS:
         st.error(f"A workout can hold at most {MAX_SETS} sets; this one has {n_sets}. Remove some rows or sets.")
     if b.button(f"Save workout · {n_sets} sets", type="primary", icon=":material/save:", width="stretch",
                 disabled=n_sets > MAX_SETS):
-        sets = [{"exercise_id": library[r.exercise]["id"], "reps": int(r.reps), "weight_kg": float(r.weight_kg or 0)}
-                for r in rows.itertuples() for _ in range(int(r.sets))]
+        sets = ([{"exercise_id": library[r.exercise]["id"], "reps": int(r.reps), "weight_kg": float(r.weight_kg or 0)}
+                 for r in strength.itertuples() for _ in range(int(r.sets))]
+                + [{"exercise_id": library[r.exercise]["id"], "duration_s": int(r.seconds)}
+                   for r in holds.itertuples() for _ in range(int(r.sets))]
+                + [{"exercise_id": library[r.exercise]["id"], "duration_s": int(r.minutes) * 60, "level": int(r.level)}
+                   for r in cardio.itertuples()])
         result = api("POST", "/me/workouts", json={
             "date": str(day), "start_time": start.strftime("%H:%M"), "focus": ", ".join(focus) or None,
             "duration_min": duration, "rpe": rpe, "sets": sets})
         if result:
-            st.session_state.plan = empty_plan()
-            st.session_state.pop("plan_editor", None)
+            clear_tables()
             st.session_state.last_saved = result
             st.rerun()
 
@@ -544,20 +643,23 @@ def history_page():
         return
     total_volume = sum(w["total_volume_kg"] for w in workouts)
     total_kcal = sum(w["estimated_kcal"] or 0 for w in workouts)
+    cardio_min = sum((s.get("duration_s") or 0) for w in workouts for s in w["sets"] if s["kind"] == "cardio") / 60
     ui.cards([("Sessions", len(workouts), "logged in total", False),
               ("Total volume", f"{total_volume / 1000:,.1f} t", "reps × weight", False),
+              ("Cardio", f"{cardio_min:,.0f} min", "in total", False),
               ("Calories", f"≈{total_kcal:,}", "estimated with the MET formula", False)])
     for w in workouts:
-        sets = pd.DataFrame(w["sets"])
-        summary = (sets.groupby("exercise", sort=False)
-                   .agg(sets=("reps", "size"), reps=("reps", "first"), weight_kg=("weight_kg", "max")))
+        names = list(dict.fromkeys(s["exercise"] for s in w["sets"]))
+        summary = pd.DataFrame([{"exercise": n, "done": describe_sets([s for s in w["sets"] if s["exercise"] == n])}
+                                for n in names])
         kcal = f" · ≈{w['estimated_kcal']} kcal" if w["estimated_kcal"] else ""
         when = f"{w['date']}{' ' + w['start_time'][:5] if w.get('start_time') else ''}"
         focus = f" · {w['focus']}" if w.get("focus") else ""
-        title = (f"{when}{focus} · {len(summary)} exercises · {w['total_volume_kg']:,.0f} kg · "
+        title = (f"{when}{focus} · {len(names)} exercises · {w['total_volume_kg']:,.0f} kg · "
                  f"{w['duration_min'] or '?'} min · RPE {w['rpe'] or '?'}{kcal}")
         with st.expander(title, icon=":material/fitness_center:"):
-            st.dataframe(summary, width="stretch")
+            st.dataframe(summary, width="stretch", hide_index=True,
+                         column_config={"exercise": "Exercise", "done": "What you did"})
             if st.button("Delete workout", key=f"del{w['id']}", icon=":material/delete:"):
                 api("DELETE", f"/me/workouts/{w['id']}")
                 st.rerun()

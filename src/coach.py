@@ -83,9 +83,9 @@ def build_context(goal: str, experience: str, summary: dict, version: str = PROM
     if version != "v1" and summary.get("workouts"):
         context["key_findings"] = key_findings(summary)
     if version not in ("v1", "v2"):
-        # "target_kg", not "weight_kg": that name is reserved for body weight, which is never sent
-        context["next_session"] = [{"exercise": t["exercise"], "sets": t["sets"], "reps": t["reps"],
-                                    "target_kg": t["weight_kg"], "reason": t["reason"]}
+        # the target as text ("3 × 9 @ 77.5 kg", "35 min @ level 6"); no "weight_kg" field, a name kept for
+        # body weight, which is never sent
+        context["next_session"] = [{"exercise": t["exercise"], "target": t["target"], "reason": t["reason"]}
                                    for t in (next_session or [])[:8]]
         context["consistency"] = consistency or {}
     return context | {"progress": summary}

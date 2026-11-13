@@ -28,9 +28,10 @@ from app.schemas import (CONSENT_VERSION, AccountOut, AuditOut, CoachIn, CoachOu
 from src import coach
 from src.calories import estimate_kcal
 from src.personas import legs_neglected
-from src.progress import consistency, exercise_history, new_records, next_session_targets, progress_summary
+from src.progress import (BODYWEIGHT_SHARE, consistency, exercise_history, new_records, next_session_targets,
+                          progress_summary)
 
-LOG_COLUMNS = ["date", "exercise", "reps", "weight_kg"]
+LOG_COLUMNS = ["date", "exercise", "reps", "weight_kg", "duration_s", "level"]
 SESSION_HOURS = 8
 MAX_FAILED_LOGINS = 5
 LOCK_MINUTES = 15
@@ -131,13 +132,22 @@ def account_out(user: User, workouts: int) -> AccountOut:
                       locked=bool(user.locked_until and user.locked_until > now()), workouts=workouts)
 
 
+def set_load(st: WorkoutSet, body_weight_kg: float | None) -> float:
+    """kg moved per rep: the weight, plus part of the body weight for bodyweight exercises."""
+    extra = BODYWEIGHT_SHARE * body_weight_kg if body_weight_kg and st.exercise.kind == "bodyweight" else 0.0
+    return st.weight_kg + extra
+
+
 def workout_out(w: Workout, records: list[str] | None = None) -> WorkoutOut:
-    kcal = estimate_kcal(w.user.weight_kg, w.duration_min, w.rpe) if w.user.weight_kg else None
+    bw = w.user.weight_kg
+    cardio = [((st.duration_s or 0) / 60, st.level) for st in w.sets if st.exercise.kind == "cardio"]
+    kcal = estimate_kcal(bw, w.duration_min, w.rpe, cardio) if bw else None
     return WorkoutOut(id=w.id, date=w.date, start_time=w.start_time, focus=w.focus,
                       duration_min=w.duration_min, rpe=w.rpe,
-                      sets=[SetOut(exercise_id=st.exercise_id, exercise=st.exercise.name, set_number=st.set_number,
-                                   reps=st.reps, weight_kg=st.weight_kg) for st in w.sets],
-                      total_volume_kg=sum(st.reps * st.weight_kg for st in w.sets),
+                      sets=[SetOut(exercise_id=st.exercise_id, exercise=st.exercise.name, kind=st.exercise.kind,
+                                   set_number=st.set_number, reps=st.reps, weight_kg=st.weight_kg,
+                                   duration_s=st.duration_s, level=st.level) for st in w.sets],
+                      total_volume_kg=round(sum(st.reps * set_load(st, bw) for st in w.sets), 1),
                       estimated_kcal=kcal, new_records=records or [])
 
 
@@ -157,38 +167,51 @@ def own_conversation(s: Session, user: User, conversation_id: int) -> CoachConve
 
 def set_rows(workouts) -> pd.DataFrame:
     """One row per set, the input format of src/progress.py."""
-    return pd.DataFrame([{"date": w.date, "exercise": st.exercise.name, "reps": st.reps, "weight_kg": st.weight_kg}
+    return pd.DataFrame([{"date": w.date, "exercise": st.exercise.name, "reps": st.reps, "weight_kg": st.weight_kg,
+                          "duration_s": st.duration_s, "level": st.level}
                          for w in workouts for st in w.sets], columns=LOG_COLUMNS)
 
 
 def user_exercises(s: Session, log: pd.DataFrame) -> pd.DataFrame:
-    return pd.DataFrame([(e.name, e.primary_muscles, e.secondary_muscles)
+    return pd.DataFrame([(e.name, e.primary_muscles, e.secondary_muscles, e.kind)
                          for e in s.scalars(select(Exercise).where(Exercise.name.in_(set(log["exercise"]))))],
-                        columns=["name", "primary_muscles", "secondary_muscles"])
+                        columns=["name", "primary_muscles", "secondary_muscles", "kind"])
 
 
 def user_progress(s: Session, user: User, today: date | None = None, weeks: int = 4) -> dict:
     today = today or date.today()
     log = set_rows(user.workouts)
-    summary = progress_summary(log, user_exercises(s, log), today, weeks)
+    summary = progress_summary(log, user_exercises(s, log), today, weeks, body_weight_kg=user.weight_kg)
     summary["consistency"] = consistency(log["date"], user.weekly_target or 3, today)
     return summary
 
 
 def user_targets(s: Session, user: User, today: date | None = None) -> list:
     log = set_rows(user.workouts)
-    return next_session_targets(log, user_exercises(s, log), user.goal or "general fitness", today)
+    return next_session_targets(log, user_exercises(s, log), user.goal or "general fitness", today,
+                                body_weight_kg=user.weight_kg)
 
 
 def add_workout(s: Session, user: User, data: WorkoutIn) -> Workout:
     ids = {st.exercise_id for st in data.sets}
-    known = set(s.scalars(select(Exercise.id).where(Exercise.id.in_(ids))))
-    if ids - known:
-        raise HTTPException(422, f"Unknown exercise ids: {sorted(ids - known)}")
+    known = {e.id: e for e in s.scalars(select(Exercise).where(Exercise.id.in_(ids)))}
+    if ids - set(known):
+        raise HTTPException(422, f"Unknown exercise ids: {sorted(ids - set(known))}")
+    rows = []
+    for i, st in enumerate(data.sets):
+        ex = known[st.exercise_id]
+        if ex.kind in ("timed", "cardio"):          # logged by time: no reps or weight
+            if not st.duration_s:
+                unit = "minutes" if ex.kind == "cardio" else "seconds"
+                raise HTTPException(422, f"'{ex.name}' is logged in {unit}, not reps.")
+            rows.append(WorkoutSet(exercise_id=ex.id, set_number=i + 1, reps=0, weight_kg=0.0,
+                                   duration_s=st.duration_s, level=st.level if ex.kind == "cardio" else None))
+        else:
+            if st.reps < 1:
+                raise HTTPException(422, f"'{ex.name}' needs at least 1 rep.")
+            rows.append(WorkoutSet(exercise_id=ex.id, set_number=i + 1, reps=st.reps, weight_kg=st.weight_kg))
     workout = Workout(user=user, date=data.date, start_time=data.start_time, focus=data.focus,
-                      duration_min=data.duration_min, rpe=data.rpe,
-                      sets=[WorkoutSet(exercise_id=st.exercise_id, set_number=i + 1, reps=st.reps,
-                                       weight_kg=st.weight_kg) for i, st in enumerate(data.sets)])
+                      duration_min=data.duration_min, rpe=data.rpe, sets=rows)
     s.add(workout)
     return workout
 

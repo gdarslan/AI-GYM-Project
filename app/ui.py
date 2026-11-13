@@ -259,7 +259,7 @@ def _muscles(text: str) -> list[str]:
 
 
 def exercise_card(name: str, primary: str, secondary: str, equipment: str, level: str, category: str,
-                  last_time: str, description: str | None = None) -> str:
+                  last_time: str, description: str | None = None, logged_as: str | None = None) -> str:
     """One exercise: a small front and back map (main muscles bright red, helpers lighter) and its details."""
     main, helpers = _muscles(primary), _muscles(secondary)
     share = {m: (100 if m in main else 40 if m in helpers else 0) for m in DRAWN_MUSCLES}
@@ -270,6 +270,8 @@ def exercise_card(name: str, primary: str, secondary: str, equipment: str, level
     chips = ("".join(f'<span class="gc-chip red">{html.escape(m)}</span>' for m in main)
              + "".join(f'<span class="gc-chip">{html.escape(m)}</span>' for m in helpers))
     meta = " · ".join(html.escape(x) for x in [equipment, level, category] if x)
+    if logged_as:
+        meta += f' · <span style="color:{RED};text-transform:none;">logged as {html.escape(logged_as)}</span>'
     return (f'<div class="gc-panel" style="display:flex;gap:14px;align-items:center;margin-bottom:12px;">'
             f'<div style="display:flex;gap:2px;flex:none;width:132px;">{maps}</div>'
             f'<div style="min-width:0;"><div style="font-weight:600;color:{TEXT};text-transform:capitalize;'

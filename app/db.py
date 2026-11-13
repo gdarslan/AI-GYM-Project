@@ -12,6 +12,8 @@ from sqlalchemy import (Boolean, Date, DateTime, Float, ForeignKey, Integer, Str
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from src.progress import exercise_kind
+
 ROOT = Path(__file__).resolve().parents[1]
 EXERCISES_CSV = ROOT / "data" / "processed" / "free_exercise_db.csv"
 DESCRIPTIONS_CSV = ROOT / "data" / "processed" / "megagym_exercises.csv"     # descriptions (CC0)
@@ -93,6 +95,11 @@ class Exercise(Base):
     category: Mapped[str] = mapped_column(String(30), default="")
     description: Mapped[str | None] = mapped_column(Text, nullable=True)     # from megaGym where the name matches
 
+    @property
+    def kind(self) -> str:
+        """weighted, bodyweight, timed or cardio: how the exercise is logged (see src/progress.py)."""
+        return exercise_kind(self.name, self.category, self.equipment)
+
 
 class Workout(Base):
     __tablename__ = "workouts"
@@ -114,8 +121,10 @@ class WorkoutSet(Base):
     workout_id: Mapped[int] = mapped_column(ForeignKey("workouts.id"), index=True)
     exercise_id: Mapped[str] = mapped_column(ForeignKey("exercises.id"))
     set_number: Mapped[int] = mapped_column(Integer)
-    reps: Mapped[int] = mapped_column(Integer)
-    weight_kg: Mapped[float] = mapped_column(Float)
+    reps: Mapped[int] = mapped_column(Integer)                              # 0 for timed exercises and cardio
+    weight_kg: Mapped[float] = mapped_column(Float)                         # extra weight for bodyweight exercises
+    duration_s: Mapped[int | None] = mapped_column(Integer, nullable=True)  # holds and cardio
+    level: Mapped[int | None] = mapped_column(Integer, nullable=True)       # cardio, 1-10
     workout: Mapped[Workout] = relationship(back_populates="sets")
     exercise: Mapped[Exercise] = relationship()
 
@@ -185,7 +194,8 @@ def backup_outdated_db(engine) -> Path | None:
 # Columns added after the first release: (table, column, SQL type). New columns are always optional, so existing
 # rows stay valid and no data has to be moved.
 ADDED_COLUMNS = [("workouts", "start_time", "TIME"), ("workouts", "focus", "VARCHAR(80)"),
-                 ("exercises", "description", "TEXT"), ("users", "weekly_target", "INTEGER")]
+                 ("exercises", "description", "TEXT"), ("users", "weekly_target", "INTEGER"),
+                 ("workout_sets", "duration_s", "INTEGER"), ("workout_sets", "level", "INTEGER")]
 
 
 def add_missing_columns(engine) -> list[str]:

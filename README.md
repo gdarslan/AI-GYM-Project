@@ -15,7 +15,7 @@ questions. A separate experiment tests whether a trained model predicts calories
 | `app/streamlit_app.py` | The screens: login, progress, log workout, history, coach, profile, privacy, admin |
 | `app/ui.py`, `app/assets/` | The look: red-and-black theme, logo, banner and the muscle body map (all drawn as SVG) |
 | `app/create_admin.py` | Command to create the first admin |
-| `src/progress.py` | Progress calculations (plain code, no AI): volume, neglected muscles, recovery, strength, next-session targets (double progression), weekly streak |
+| `src/progress.py` | Progress calculations (plain code, no AI): volume, neglected muscles, recovery, strength, next-session targets, weekly streak. Exercises are logged by kind, worked out from free-exercise-db's category and equipment: weights (sets × reps × kg), bodyweight (sets × reps, ≈65% of body weight counts as load), holds and stretches (sets × seconds) and cardio (minutes at a level) |
 | `src/coach.py` | The AI coach: builds the context, calls the local model (Ollama), logs every answer |
 | `prompts/` | Coach prompts, one file per version (v1 numbers only, v2 + key findings, v3 + next-session targets, consistency and a rule for users with little data; v3 is used) |
 | `src/calories.py` | Calorie estimate with the MET formula |

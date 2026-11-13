@@ -75,9 +75,13 @@ class TokenOut(BaseModel):
 
 # ---------------- workouts ----------------
 class SetIn(BaseModel):
+    """One set. Which fields are needed depends on the exercise: reps for weights and bodyweight, duration_s
+    for holds and cardio (plus a level for cardio). The API checks this per exercise."""
     exercise_id: str
-    reps: int = Field(ge=1, le=100)
-    weight_kg: float = Field(ge=0, le=500)    # 0 = bodyweight
+    reps: int = Field(default=0, ge=0, le=100)
+    weight_kg: float = Field(default=0, ge=0, le=500)      # extra weight on bodyweight exercises
+    duration_s: int | None = Field(default=None, ge=1, le=6 * 3600)
+    level: int | None = Field(default=None, ge=1, le=10)
 
 
 class WorkoutIn(BaseModel):
@@ -99,9 +103,12 @@ class WorkoutIn(BaseModel):
 class SetOut(BaseModel):
     exercise_id: str
     exercise: str
+    kind: str
     set_number: int
     reps: int
     weight_kg: float
+    duration_s: int | None = None
+    level: int | None = None
 
 
 class WorkoutOut(BaseModel):
@@ -126,6 +133,7 @@ class ExerciseOut(BaseModel):
     equipment: str
     level: str
     category: str
+    kind: str                            # weighted, bodyweight, timed or cardio
     description: str | None = None
 
 

@@ -14,7 +14,8 @@ How to read the data:
 - recovery_guideline: "recovering" if trained less than 2 days ago (a general guideline, not a prediction).
 - strength_trends: estimated 1-rep max (Epley formula) in the first and last week an exercise was done.
 - key_findings.enough_data false: start by saying there is not enough training data yet for firm conclusions (fewer than 3 workouts), and keep the advice general.
-- next_session: the app's calculated targets for the next session (sets, reps, target_kg = the weight to lift, and the reason). When asked what to do next, use these targets and do not invent other weights.
+- next_session: the app's calculated target for each exercise next time (sets × reps @ weight, seconds for holds, or minutes @ level for cardio) and the reason.
+- progress.cardio_minutes: minutes of cardio in the period (cardio adds no lifting volume). When asked what to do next, use these targets and do not invent other weights.
 - consistency: training days this week against the weekly target, and how many weeks in a row the target was reached.
 
 Write for the user in plain words: never mention the names of data fields (such as key_findings, volume_share_pct or next_session).
